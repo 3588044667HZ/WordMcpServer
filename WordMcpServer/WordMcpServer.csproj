@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <!-- VSTO 项目标识：Office 插件类型 + C# 项目类型 -->
+    <ProjectTypeGuids>{BAA0C2D2-18E2-41B9-852F-F413020CAA33};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{7F3A9C2E-4D18-4B6A-8E5F-9A1C2D3E4F50}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <NoStandardLibraries>false</NoStandardLibraries>
+    <RootNamespace>WordMcpServer</RootNamespace>
+    <AssemblyName>WordMcpServer</AssemblyName>
+    <LoadBehavior>3</LoadBehavior>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <DefineConstants>VSTO40</DefineConstants>
+    <BootstrapperEnabled>true</BootstrapperEnabled>
+    <BootstrapperComponentsLocation>HomeSite</BootstrapperComponentsLocation>
+    <ResolveComReferenceSilent>true</ResolveComReferenceSilent>
+    <!-- ClickOnce 清单签名：使用仓库自带的空密码测试证书（可替换为企业签名证书） -->
+    <SignManifests>true</SignManifests>
+    <ManifestKeyFile>WordMcpServer_TemporaryKey.pfx</ManifestKeyFile>
+    <ManifestCertificateThumbprint>7C729D282CA2C64E18E4A1CD13A554698E56ADBD</ManifestCertificateThumbprint>
+    <!-- 自动生成绑定重定向：ASP.NET Core 2.2 依赖的 System.* 包与 .NET Framework 需要重定向 -->
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+  </PropertyGroup>
+  <PropertyGroup>
+    <!-- 宿主应用：targets 依据此属性生成插件清单与注册表项 -->
+    <OfficeApplication>Word</OfficeApplication>
+  </PropertyGroup>
+  <ItemGroup>
+    <BootstrapperPackage Include="Microsoft.VSTORuntime.4.0">
+      <Visible>False</Visible>
+      <ProductName>Microsoft Visual Studio 2010 Tools for Office Runtime %28x86 and x64%29</ProductName>
+      <Install>true</Install>
+    </BootstrapperPackage>
+  </ItemGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+    <DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+    <DefineConstants>$(DefineConstants);TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Accessibility" />
+    <Reference Include="System" />
+    <Reference Include="System.Configuration" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- VSTO 运行时程序集：从 GAC 解析，不复制到输出目录 -->
+    <Reference Include="Microsoft.Office.Tools.v4.0.Framework, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Tools.Applications.Runtime, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Common, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Word, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Microsoft.Office.Tools.Common.v4.0.Utilities, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <Private>True</Private>
+    </Reference>
+  </ItemGroup>
+  <!-- Office 主互操作程序集（PIA，嵌入互操作类型避免部署 PIA）：
+       优先从 VS 的 PIA 目录解析（HintPath），目录不存在时回退到 GAC 解析。 -->
+  <PropertyGroup>
+    <OfficePiaRoot Condition="Exists('$(MSBuildProgramFiles32)\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Office15')">$(MSBuildProgramFiles32)\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Office15</OfficePiaRoot>
+    <OfficePiaRoot Condition="'$(OfficePiaRoot)' == '' And Exists('$(MSBuildProgramFiles32)\Microsoft Visual Studio 14.0\Visual Studio Tools for Office\PIA\Office15')">$(MSBuildProgramFiles32)\Microsoft Visual Studio 14.0\Visual Studio Tools for Office\PIA\Office15</OfficePiaRoot>
+    <OfficePiaRoot Condition="'$(OfficePiaRoot)' == '' And Exists('D:\VSShared\Visual Studio Tools for Office\PIA\Office15')">D:\VSShared\Visual Studio Tools for Office\PIA\Office15</OfficePiaRoot>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(OfficePiaRoot)' != ''">
+    <Reference Include="office, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c, processorArchitecture=MSIL">
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+      <HintPath>$(OfficePiaRoot)\office.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Office.Interop.Word, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c, processorArchitecture=MSIL">
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+      <HintPath>$(OfficePiaRoot)\Microsoft.Office.Interop.Word.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup Condition="'$(OfficePiaRoot)' == ''">
+    <!-- 无 HintPath 时由 RAR 从 GAC 解析 Office 15 PIA -->
+    <Reference Include="office, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c, processorArchitecture=MSIL">
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="Microsoft.Office.Interop.Word, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c, processorArchitecture=MSIL">
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="stdole, Version=7.0.3300.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a">
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+  <!-- NuGet 包程序集（packages.config 模式不会自动生成引用，这里显式列出并随构建复制） -->
+  <ItemGroup>
+    <Reference Include="Microsoft.AspNetCore"><HintPath>..\packages/Microsoft.AspNetCore.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Connections.Abstractions"><HintPath>..\packages/Microsoft.AspNetCore.Connections.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Connections.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Hosting"><HintPath>..\packages/Microsoft.AspNetCore.Hosting.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Hosting.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Hosting.Abstractions"><HintPath>..\packages/Microsoft.AspNetCore.Hosting.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Hosting.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Hosting.Server.Abstractions"><HintPath>..\packages/Microsoft.AspNetCore.Hosting.Server.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Hosting.Server.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Http"><HintPath>..\packages/Microsoft.AspNetCore.Http.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Http.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Http.Abstractions"><HintPath>..\packages/Microsoft.AspNetCore.Http.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Http.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Http.Extensions"><HintPath>..\packages/Microsoft.AspNetCore.Http.Extensions.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Http.Extensions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Http.Features"><HintPath>..\packages/Microsoft.AspNetCore.Http.Features.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Http.Features.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Server.Kestrel"><HintPath>..\packages/Microsoft.AspNetCore.Server.Kestrel.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Server.Kestrel.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Server.Kestrel.Core"><HintPath>..\packages/Microsoft.AspNetCore.Server.Kestrel.Core.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Server.Kestrel.Core.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Server.Kestrel.Https"><HintPath>..\packages/Microsoft.AspNetCore.Server.Kestrel.Https.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Server.Kestrel.Https.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions"><HintPath>..\packages/Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets"><HintPath>..\packages/Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.AspNetCore.WebUtilities"><HintPath>..\packages/Microsoft.AspNetCore.WebUtilities.2.2.0/lib/netstandard2.0/Microsoft.AspNetCore.WebUtilities.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Configuration"><HintPath>..\packages/Microsoft.Extensions.Configuration.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Configuration.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Configuration.Abstractions"><HintPath>..\packages/Microsoft.Extensions.Configuration.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Configuration.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Configuration.Binder"><HintPath>..\packages/Microsoft.Extensions.Configuration.Binder.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Configuration.Binder.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Configuration.EnvironmentVariables"><HintPath>..\packages/Microsoft.Extensions.Configuration.EnvironmentVariables.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Configuration.EnvironmentVariables.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Configuration.FileExtensions"><HintPath>..\packages/Microsoft.Extensions.Configuration.FileExtensions.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Configuration.FileExtensions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.DependencyInjection"><HintPath>..\packages/Microsoft.Extensions.DependencyInjection.2.2.0/lib/net461/Microsoft.Extensions.DependencyInjection.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.DependencyInjection.Abstractions"><HintPath>..\packages/Microsoft.Extensions.DependencyInjection.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.Extensions.DependencyInjection.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.FileProviders.Abstractions"><HintPath>..\packages/Microsoft.Extensions.FileProviders.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.Extensions.FileProviders.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.FileProviders.Physical"><HintPath>..\packages/Microsoft.Extensions.FileProviders.Physical.2.2.0/lib/netstandard2.0/Microsoft.Extensions.FileProviders.Physical.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Hosting.Abstractions"><HintPath>..\packages/Microsoft.Extensions.Hosting.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Hosting.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Logging"><HintPath>..\packages/Microsoft.Extensions.Logging.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Logging.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Logging.Abstractions"><HintPath>..\packages/Microsoft.Extensions.Logging.Abstractions.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Logging.Abstractions.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.ObjectPool"><HintPath>..\packages/Microsoft.Extensions.ObjectPool.2.2.0/lib/netstandard2.0/Microsoft.Extensions.ObjectPool.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Options"><HintPath>..\packages/Microsoft.Extensions.Options.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Options.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Extensions.Primitives"><HintPath>..\packages/Microsoft.Extensions.Primitives.2.2.0/lib/netstandard2.0/Microsoft.Extensions.Primitives.dll</HintPath></Reference>
+
+    <Reference Include="Microsoft.Net.Http.Headers"><HintPath>..\packages/Microsoft.Net.Http.Headers.2.2.0/lib/netstandard2.0/Microsoft.Net.Http.Headers.dll</HintPath></Reference>
+
+    <Reference Include="Newtonsoft.Json"><HintPath>..\packages/Newtonsoft.Json.13.0.3/lib/netstandard2.0/Newtonsoft.Json.dll</HintPath></Reference>
+
+    <Reference Include="System.Buffers"><HintPath>..\packages/System.Buffers.4.5.1/lib/net461/System.Buffers.dll</HintPath></Reference>
+
+    <Reference Include="System.ComponentModel.Annotations"><HintPath>..\packages/System.ComponentModel.Annotations.4.5.0/lib/net461/System.ComponentModel.Annotations.dll</HintPath></Reference>
+
+    <Reference Include="System.Diagnostics.DiagnosticSource"><HintPath>..\packages/System.Diagnostics.DiagnosticSource.4.5.1/lib/net46/System.Diagnostics.DiagnosticSource.dll</HintPath></Reference>
+
+    <Reference Include="System.Memory"><HintPath>..\packages/System.Memory.4.5.4/lib/net461/System.Memory.dll</HintPath></Reference>
+    <Reference Include="System.IO.Pipelines"><HintPath>..\packages/System.IO.Pipelines.4.5.1/lib/netstandard2.0/System.IO.Pipelines.dll</HintPath></Reference>
+
+    <Reference Include="System.Numerics.Vectors"><HintPath>..\packages/System.Numerics.Vectors.4.5.0/lib/netstandard2.0/System.Numerics.Vectors.dll</HintPath></Reference>
+
+    <Reference Include="System.Reflection.Metadata"><HintPath>..\packages/System.Reflection.Metadata.1.6.0/lib/netstandard2.0/System.Reflection.Metadata.dll</HintPath></Reference>
+
+    <Reference Include="System.Runtime.CompilerServices.Unsafe"><HintPath>..\packages/System.Runtime.CompilerServices.Unsafe.4.5.3/lib/net461/System.Runtime.CompilerServices.Unsafe.dll</HintPath></Reference>
+
+    <Reference Include="System.Security.Cryptography.Cng"><HintPath>..\packages/System.Security.Cryptography.Cng.4.5.0/lib/net461/System.Security.Cryptography.Cng.dll</HintPath></Reference>
+
+    <Reference Include="System.Text.Encodings.Web"><HintPath>..\packages/System.Text.Encodings.Web.4.5.0/lib/netstandard2.0/System.Text.Encodings.Web.dll</HintPath></Reference>
+
+    <Reference Include="System.Threading.Tasks.Extensions"><HintPath>..\packages/System.Threading.Tasks.Extensions.4.5.4/lib/net461/System.Threading.Tasks.Extensions.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Logging\IMcpLogger.cs" />
+    <Compile Include="Logging\FileMcpLogger.cs" />
+    <Compile Include="Mcp\McpSettings.cs" />
+    <Compile Include="Mcp\McpErrorCodes.cs" />
+    <Compile Include="Mcp\Threading\OfficeThreadMarshaller.cs" />
+    <Compile Include="Mcp\Protocol\IMcpRequestHandler.cs" />
+    <Compile Include="Mcp\Protocol\McpProtocolProcessor.cs" />
+    <Compile Include="Mcp\Server\McpHttpHost.cs" />
+    <Compile Include="Mcp\Server\McpHttpMiddleware.cs" />
+    <Compile Include="Mcp\Server\Startup.cs" />
+    <Compile Include="Mcp\Tools\McpToolException.cs" />
+    <Compile Include="Mcp\Tools\ITool.cs" />
+    <Compile Include="Mcp\Tools\ToolBase.cs" />
+    <Compile Include="Mcp\Tools\ToolArgumentValidator.cs" />
+    <Compile Include="Mcp\Tools\ToolRegistry.cs" />
+    <Compile Include="Mcp\Tools\DocumentTools.cs" />
+    <Compile Include="Mcp\Tools\ParagraphTools.cs" />
+    <Compile Include="Mcp\Tools\TableTools.cs" />
+    <Compile Include="Mcp\Tools\SearchTools.cs" />
+    <Compile Include="Mcp\Tools\InsertTools.cs" />
+    <Compile Include="Mcp\Tools\PageSetupTools.cs" />
+    <Compile Include="Mcp\Tools\StyleTools.cs" />
+    <Compile Include="Services\IWordService.cs" />
+    <Compile Include="Services\WordService.cs" />
+    <Compile Include="ThisAddIn.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <None Include="ThisAddIn.Designer.xml">
+      <DependentUpon>ThisAddIn.cs</DependentUpon>
+    </None>
+    <Compile Include="ThisAddIn.Designer.cs">
+      <DependentUpon>ThisAddIn.Designer.xml</DependentUpon>
+    </Compile>
+    <AppDesigner Include="Properties\" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
+    <None Include="packages.config" />
+    <None Include="WordMcpServer_TemporaryKey.pfx" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include=".gitignore" />
+  </ItemGroup>
+  <PropertyGroup>
+    <!-- 自动探测 VS 版本：命令行构建时 VisualStudioVersion 未注入，
+         按 OfficeTools targets 实际存在的版本回退，保证不传参也能找到 VSTO targets -->
+    <VisualStudioVersion Condition="'$(VisualStudioVersion)' == '' And Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v18.0\OfficeTools')">18.0</VisualStudioVersion>
+    <VisualStudioVersion Condition="'$(VisualStudioVersion)' == '' And Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v17.0\OfficeTools')">17.0</VisualStudioVersion>
+    <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</VisualStudioVersion>
+    <VSToolsPath Condition="'$(VSToolsPath)' == ''">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)</VSToolsPath>
+  </PropertyGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="$(VSToolsPath)\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets" Condition="'$(VSToolsPath)' != ''" />
+  <ProjectExtensions>
+    <VisualStudio>
+      <FlavorProperties GUID="{BAA0C2D2-18E2-41B9-852F-F413020CAA33}">
+        <ProjectProperties HostName="Word"
+          HostPackage="{29A7B9D7-A7F1-4328-8EF0-6B2D1A56B2C1}"
+          ProjectCreationSetting="1"
+          OfficeVersion="15.0"
+          VstxVersion="4.0"
+          ApplicationType="Word"
+          Language="cs"
+          TemplatesPath=""
+          AddItemTemplatesGuid="{51063C3A-E220-4D12-8922-BDA915ACD783}"
+          DebugInfoExeName="#Software\Microsoft\Office\15.0\Word\InstallRoot\Path#WINWORD.EXE"
+          DebugInfoCommandLine="/x"
+          DebugInfoWorkingDir=""
+          IconImageList="" />
+        <Host Name="Word" GeneratedCodeNamespace="WordMcpServer" IconIndex="0">
+          <HostItem Name="ThisAddIn"
+            Code="ThisAddIn.cs"
+            CanonicalName="ThisAddIn"
+            Blueprint="ThisAddIn.Designer.xml"
+            GeneratedCode="ThisAddIn.Designer.cs"
+            IconIndex="1" />
+        </Host>
+      </FlavorProperties>
+    </VisualStudio>
+  </ProjectExtensions>
+</Project>
