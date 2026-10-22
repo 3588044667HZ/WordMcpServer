@@ -292,6 +292,18 @@ namespace WordMcpServer.Mcp.Tools
                     run.Highlight = highlight.Value<string>();
                 }
 
+                var superscript = runObj["superscript"];
+                if (superscript != null && superscript.Type != JTokenType.Null)
+                {
+                    run.Superscript = superscript.Value<bool>();
+                }
+
+                var subscript = runObj["subscript"];
+                if (subscript != null && subscript.Type != JTokenType.Null)
+                {
+                    run.Subscript = subscript.Value<bool>();
+                }
+
                 runs.Add(run);
             }
 

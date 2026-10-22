@@ -144,27 +144,114 @@ namespace WordMcpServer.Mcp.Tools
 
         public override string Name => "insert_hyperlink";
 
-        public override string Description => "插入超链接：默认追加到文档末尾（新段落），或用 paragraph_index 插入到指定段落开头。text 为显示文本，address 为目标地址（URL 或邮件地址）。";
+        public override string Description => "插入超链接：address 为外部链接（URL/邮件），bookmark 为内部锚点（跳转到书签），二者至少提供一个。默认追加到文档末尾（新段落），或用 paragraph_index 插入到指定段落开头。";
 
         public override JObject InputSchema => Schema(new JObject
         {
-            ["text"] = Str("超链接显示文本（缺省使用 address）"),
-            ["address"] = Str("目标地址，如 https://example.com 或 mailto:a@b.com"),
+            ["text"] = Str("超链接显示文本（缺省使用 address / bookmark）"),
+            ["address"] = Str("外部目标地址，如 https://example.com 或 mailto:a@b.com"),
+            ["bookmark"] = Str("内部锚点书签名称（可选，需先用 insert_bookmark 创建）"),
             ["screen_tip"] = Str("悬停提示（可选）"),
             ["paragraph_index"] = Int("插入到该段落开头（1 基，可选）；缺省追加到文档末尾", 1),
-        }, "address");
+        });
 
         public override JObject Execute(JObject arguments)
         {
             var request = new InsertHyperlinkRequest
             {
                 Text = ToolArgumentValidator.OptionalString(arguments, "text"),
-                Address = ToolArgumentValidator.RequireString(arguments, "address"),
+                Address = ToolArgumentValidator.OptionalString(arguments, "address"),
+                Bookmark = ToolArgumentValidator.OptionalString(arguments, "bookmark"),
                 ScreenTip = ToolArgumentValidator.OptionalString(arguments, "screen_tip"),
                 ParagraphIndex = ToolArgumentValidator.OptionalInt(arguments, "paragraph_index", 1),
             };
-            Logger.Debug($"执行 insert_hyperlink，address={request.Address}");
+            Logger.Debug($"执行 insert_hyperlink，address={request.Address}，bookmark={request.Bookmark}");
             return JObject.FromObject(Service.InsertHyperlink(request));
+        }
+    }
+
+    /// <summary>列出超链接。</summary>
+    public sealed class ListHyperlinksTool : ToolBase
+    {
+        public ListHyperlinksTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "list_hyperlinks";
+
+        public override string Description => "列出文档中的所有超链接（索引、显示文本、外部地址、内部锚点、悬停提示、所在段落）。";
+
+        public override JObject InputSchema => EmptySchema();
+
+        public override JObject Execute(JObject arguments)
+        {
+            Logger.Debug("执行 list_hyperlinks");
+            var links = Service.ListHyperlinks();
+            return new JObject
+            {
+                ["count"] = links.Count,
+                ["hyperlinks"] = JArray.FromObject(links),
+            };
+        }
+    }
+
+    /// <summary>修改超链接。</summary>
+    public sealed class UpdateHyperlinkTool : ToolBase
+    {
+        public UpdateHyperlinkTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "update_hyperlink";
+
+        public override string Description => "修改已有超链接（未提供的字段保持不变）：显示文本、外部地址、内部锚点、悬停提示。索引来自 list_hyperlinks。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["index"] = Int("超链接索引（1 基）", 1),
+            ["text"] = Str("新的显示文本"),
+            ["address"] = Str("新的外部地址"),
+            ["bookmark"] = Str("新的内部锚点书签名称"),
+            ["screen_tip"] = Str("新的悬停提示"),
+        }, "index");
+
+        public override JObject Execute(JObject arguments)
+        {
+            var request = new UpdateHyperlinkRequest
+            {
+                Index = ToolArgumentValidator.RequireInt(arguments, "index", 1),
+                Text = ToolArgumentValidator.OptionalString(arguments, "text"),
+                Address = ToolArgumentValidator.OptionalString(arguments, "address"),
+                Bookmark = ToolArgumentValidator.OptionalString(arguments, "bookmark"),
+                ScreenTip = ToolArgumentValidator.OptionalString(arguments, "screen_tip"),
+            };
+            Logger.Debug($"执行 update_hyperlink，index={request.Index}");
+            return JObject.FromObject(Service.UpdateHyperlink(request));
+        }
+    }
+
+    /// <summary>删除超链接。</summary>
+    public sealed class DeleteHyperlinkTool : ToolBase
+    {
+        public DeleteHyperlinkTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "delete_hyperlinks";
+
+        public override string Description => "删除超链接：提供 index 删除单个，或 all=true 删除全部（只删除链接，保留显示文本）。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["index"] = Int("要删除的超链接索引（1 基，可选）", 1),
+            ["all"] = Bool("是否删除全部超链接"),
+        });
+
+        public override JObject Execute(JObject arguments)
+        {
+            var index = ToolArgumentValidator.OptionalInt(arguments, "index", 1);
+            var all = ToolArgumentValidator.OptionalBool(arguments, "all") ?? false;
+            Logger.Debug($"执行 delete_hyperlinks，index={index}，all={all}");
+            var deleted = Service.DeleteHyperlinks(index, all);
+            return new JObject
+            {
+                ["deleted_count"] = deleted,
+                ["message"] = deleted == 0 ? "没有可删除的超链接" : $"已删除 {deleted} 个超链接",
+            };
         }
     }
 }

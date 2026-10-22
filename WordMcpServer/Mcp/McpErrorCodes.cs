@@ -24,6 +24,12 @@
         /// <summary>找不到指定的批注。</summary>
         public const string CommentNotFound = "COMMENT_NOT_FOUND";
 
+        /// <summary>找不到指定的脚注/尾注。</summary>
+        public const string NoteNotFound = "NOTE_NOT_FOUND";
+
+        /// <summary>找不到指定的超链接。</summary>
+        public const string HyperlinkNotFound = "HYPERLINK_NOT_FOUND";
+
         /// <summary>找不到指定的样式。</summary>
         public const string StyleNotFound = "STYLE_NOT_FOUND";
 

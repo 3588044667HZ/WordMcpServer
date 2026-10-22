@@ -30,6 +30,9 @@ namespace WordMcpServer.Mcp.Tools
             "get_page_setup",
             "get_paragraph",
             "get_document_properties",
+            "list_notes",
+            "get_note",
+            "list_hyperlinks",
         };
 
         private readonly Dictionary<string, ITool> _tools;
@@ -107,6 +110,19 @@ namespace WordMcpServer.Mcp.Tools
                 new AddWatermarkTool(wordService, logger),
                 new RemoveWatermarkTool(wordService, logger),
                 new InsertFootnoteTool(wordService, logger),
+
+                // 论文增强：注释 / 超链接 / 交叉引用 / 题注 / 域（11）
+                new InsertEndnoteTool(wordService, logger),
+                new ListNotesTool(wordService, logger),
+                new GetNoteTool(wordService, logger),
+                new DeleteNoteTool(wordService, logger),
+                new SetNoteOptionsTool(wordService, logger),
+                new ListHyperlinksTool(wordService, logger),
+                new UpdateHyperlinkTool(wordService, logger),
+                new DeleteHyperlinkTool(wordService, logger),
+                new InsertCrossReferenceTool(wordService, logger),
+                new InsertCaptionTool(wordService, logger),
+                new InsertFieldTool(wordService, logger),
 
                 // 页面设置（2）
                 new GetPageSetupTool(wordService, logger),

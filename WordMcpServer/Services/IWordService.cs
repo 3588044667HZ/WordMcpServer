@@ -187,8 +187,10 @@ namespace WordMcpServer.Services
     /// <summary>超链接信息。</summary>
     public sealed class HyperlinkInfo
     {
+        [JsonProperty("index")] public int Index { get; set; }
         [JsonProperty("text")] public string Text { get; set; }
         [JsonProperty("address")] public string Address { get; set; }
+        [JsonProperty("sub_address")] public string SubAddress { get; set; }
         [JsonProperty("screen_tip")] public string ScreenTip { get; set; }
         [JsonProperty("paragraph_index")] public int ParagraphIndex { get; set; }
         [JsonProperty("hyperlink_count")] public int HyperlinkCount { get; set; }
@@ -447,6 +449,10 @@ namespace WordMcpServer.Services
     {
         public string Text { get; set; }
         public string Address { get; set; }
+
+        /// <summary>内部锚点书签名称（与 address 二选一）。</summary>
+        public string Bookmark { get; set; }
+
         public string ScreenTip { get; set; }
 
         /// <summary>插入到该段落之前（1 基）；为空表示追加到文档末尾。</summary>
@@ -593,6 +599,8 @@ namespace WordMcpServer.Services
         public bool? Underline { get; set; }
         public int? ColorArgb { get; set; }
         public string Highlight { get; set; }
+        public bool? Superscript { get; set; }
+        public bool? Subscript { get; set; }
     }
 
     /// <summary>add_paragraph_runs 请求。</summary>
@@ -707,15 +715,6 @@ namespace WordMcpServer.Services
         [JsonProperty("message")] public string Message { get; set; }
     }
 
-    /// <summary>脚注信息。</summary>
-    public sealed class FootnoteInfo
-    {
-        [JsonProperty("index")] public int Index { get; set; }
-        [JsonProperty("text")] public string Text { get; set; }
-        [JsonProperty("paragraph_index")] public int? ParagraphIndex { get; set; }
-        [JsonProperty("footnote_count")] public int FootnoteCount { get; set; }
-    }
-
     /// <summary>set_paragraph_shading 请求。</summary>
     public sealed class SetParagraphShadingRequest
     {
@@ -733,6 +732,141 @@ namespace WordMcpServer.Services
 
         /// <summary>边框宽度：thin / medium / thick 或磅值（如 1.5）。</summary>
         public string BorderWidth { get; set; }
+    }
+
+    // ============================== 论文增强 DTO ==============================
+
+    /// <summary>脚注/尾注信息。</summary>
+    public sealed class NoteInfo
+    {
+        [JsonProperty("note_type")] public string NoteType { get; set; }
+        [JsonProperty("index")] public int Index { get; set; }
+        [JsonProperty("text")] public string Text { get; set; }
+        [JsonProperty("reference_paragraph_index")] public int ReferenceParagraphIndex { get; set; }
+        [JsonProperty("reference_text")] public string ReferenceText { get; set; }
+        [JsonProperty("note_count")] public int NoteCount { get; set; }
+    }
+
+    /// <summary>脚注/尾注编号选项。</summary>
+    public sealed class NoteOptionsInfo
+    {
+        [JsonProperty("note_type")] public string NoteType { get; set; }
+        [JsonProperty("number_style")] public string NumberStyle { get; set; }
+        [JsonProperty("numbering_rule")] public string NumberingRule { get; set; }
+        [JsonProperty("starting_number")] public int StartingNumber { get; set; }
+        [JsonProperty("location")] public string Location { get; set; }
+        [JsonProperty("note_count")] public int NoteCount { get; set; }
+    }
+
+    /// <summary>set_note_options 请求。</summary>
+    public sealed class SetNoteOptionsRequest
+    {
+        /// <summary>footnote / endnote。</summary>
+        public string NoteType { get; set; }
+
+        /// <summary>arabic / upper-roman / lower-roman / upper-letter / lower-letter。</summary>
+        public string NumberStyle { get; set; }
+
+        /// <summary>continuous / restart-section / restart-page。</summary>
+        public string NumberingRule { get; set; }
+
+        public int? StartingNumber { get; set; }
+
+        /// <summary>仅脚注：bottom / beneath-text。</summary>
+        public string Location { get; set; }
+    }
+
+    /// <summary>insert_cross_reference 请求。</summary>
+    public sealed class CrossReferenceRequest
+    {
+        /// <summary>heading / bookmark / footnote / endnote / caption。</summary>
+        public string ReferenceType { get; set; }
+
+        /// <summary>标题文本、书签名、脚注/尾注编号、题注编号。</summary>
+        public string ReferenceItem { get; set; }
+
+        /// <summary>caption 类型的题注标签（如 图 / 表）。</summary>
+        public string CaptionLabel { get; set; }
+
+        /// <summary>text / number / page / label-and-number / entire-caption（缺省按类型）。</summary>
+        public string ReferenceKind { get; set; }
+
+        /// <summary>是否插入为可点击超链接（默认 true）。</summary>
+        public bool InsertAsHyperlink { get; set; } = true;
+
+        /// <summary>插入到该段落末尾（1 基）；缺省追加到文档末尾。</summary>
+        public int? ParagraphIndex { get; set; }
+    }
+
+    /// <summary>交叉引用结果。</summary>
+    public sealed class CrossReferenceResult
+    {
+        [JsonProperty("inserted")] public bool Inserted { get; set; }
+        [JsonProperty("reference_type")] public string ReferenceType { get; set; }
+        [JsonProperty("reference_kind")] public string ReferenceKind { get; set; }
+        [JsonProperty("paragraph_index")] public int ParagraphIndex { get; set; }
+        [JsonProperty("paragraph_count")] public int ParagraphCount { get; set; }
+    }
+
+    /// <summary>insert_caption 请求。</summary>
+    public sealed class InsertCaptionRequest
+    {
+        /// <summary>题注标签（图 / 表 / Figure / Table）。</summary>
+        public string Label { get; set; } = "图";
+
+        /// <summary>题注文字（可选）。</summary>
+        public string Title { get; set; }
+
+        /// <summary>above / below（默认 below）。</summary>
+        public string Position { get; set; } = "below";
+
+        /// <summary>题注插入到该段落之后（below）或之前（above）；缺省最后一个段落。</summary>
+        public int? ParagraphIndex { get; set; }
+    }
+
+    /// <summary>题注结果。</summary>
+    public sealed class CaptionResult
+    {
+        [JsonProperty("label")] public string Label { get; set; }
+        [JsonProperty("title")] public string Title { get; set; }
+        [JsonProperty("position")] public string Position { get; set; }
+        [JsonProperty("paragraph_index")] public int ParagraphIndex { get; set; }
+        [JsonProperty("paragraph_count")] public int ParagraphCount { get; set; }
+    }
+
+    /// <summary>insert_field 请求。</summary>
+    public sealed class InsertFieldRequest
+    {
+        /// <summary>域代码，如 "PAGEREF bm \\h"、"SEQ 图 \\* ARABIC"、"DATE"。</summary>
+        public string FieldCode { get; set; }
+
+        /// <summary>插入到该段落末尾（1 基）；缺省追加到文档末尾。</summary>
+        public int? ParagraphIndex { get; set; }
+
+        /// <summary>插入后是否立即更新域（默认 true）。</summary>
+        public bool Update { get; set; } = true;
+    }
+
+    /// <summary>域信息。</summary>
+    public sealed class FieldInfoResult
+    {
+        [JsonProperty("index")] public int Index { get; set; }
+        [JsonProperty("code")] public string Code { get; set; }
+        [JsonProperty("result")] public string Result { get; set; }
+        [JsonProperty("field_count")] public int FieldCount { get; set; }
+    }
+
+    /// <summary>update_hyperlink 请求。</summary>
+    public sealed class UpdateHyperlinkRequest
+    {
+        public int Index { get; set; }
+        public string Text { get; set; }
+        public string Address { get; set; }
+
+        /// <summary>书签锚点（内部链接）。</summary>
+        public string Bookmark { get; set; }
+
+        public string ScreenTip { get; set; }
     }
 
     // ============================== 服务契约 ==============================
@@ -835,6 +969,19 @@ namespace WordMcpServer.Services
         RevisionResult SetTrackChanges(bool enabled);
         RevisionResult AcceptRevisions();
         RevisionResult RejectRevisions();
-        FootnoteInfo InsertFootnote(string text, int? paragraphIndex);
+        NoteInfo InsertFootnote(string text, int? paragraphIndex, string anchorText);
+
+        // ---- 论文增强：注释 / 超链接 / 交叉引用 / 题注 / 域 ----
+        NoteInfo InsertEndnote(string text, int? paragraphIndex, string anchorText);
+        List<NoteInfo> ListNotes(string noteType);
+        NoteInfo GetNote(string noteType, int index);
+        void DeleteNote(string noteType, int index);
+        NoteOptionsInfo SetNoteOptions(SetNoteOptionsRequest request);
+        List<HyperlinkInfo> ListHyperlinks();
+        HyperlinkInfo UpdateHyperlink(UpdateHyperlinkRequest request);
+        int DeleteHyperlinks(int? index, bool all);
+        CrossReferenceResult InsertCrossReference(CrossReferenceRequest request);
+        CaptionResult InsertCaption(InsertCaptionRequest request);
+        FieldInfoResult InsertField(InsertFieldRequest request);
     }
 }

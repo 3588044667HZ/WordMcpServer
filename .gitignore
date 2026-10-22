@@ -1,0 +1,7 @@
+/WordMcpServer/bin/
+/WordMcpServer/obj/
+/.vs/
+/.idea/
+*.user
+hs_err_pid*.log
+~$*.docx

@@ -1,14 +1,14 @@
 # WordMcpServer — Word MCP 服务器（VSTO 插件）
 
 一个 Word VSTO 插件。插件随 Word 启动时自动在 `127.0.0.1:5101` 运行本地 HTTP 服务器，
-通过 MCP（Model Context Protocol）的 Streamable HTTP 传输暴露 70 个操作 Word 的工具。
+通过 MCP（Model Context Protocol）的 Streamable HTTP 传输暴露 81 个操作 Word 的工具。
 AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控当前打开的文档，
 所有修改立即在 Word 界面中可见。
 
 > 本项目与 `PptMcpServer`（PowerPoint 版，端口 5100）架构一致、端口错开，可同时运行。
 > 开发经验见 `DEVELOPMENT_GUIDE.md`。
 
-## 功能一览（70 个工具）
+## 功能一览（81 个工具）
 
 ### 文档（18）
 
@@ -65,14 +65,17 @@ AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控
 | `set_row_height` | 行高（auto / at-least / exactly） |
 | `set_table_style` | 为已有表格套用表格样式 |
 
-### 查找、书签与链接（6）
+### 查找、书签与链接（9）
 
 | 工具 | 说明 |
 | --- | --- |
 | `find_replace_text` | 全文查找替换（大小写 / 全字匹配，可只替换第一处） |
 | `find_text` | 查找所有出现位置（段落索引与字符位置） |
 | `insert_bookmark` / `get_bookmark_text` / `delete_bookmark` | 插入 / 读取 / 删除书签 |
-| `insert_hyperlink` | 插入超链接（文档末尾或指定段落） |
+| `insert_hyperlink` | 插入超链接（外部 URL 或内部书签锚点） |
+| `list_hyperlinks` | 列出全部超链接（地址、内部锚点、所在段落） |
+| `update_hyperlink` | 修改链接显示文本 / 地址 / 锚点 / 悬停提示 |
+| `delete_hyperlinks` | 按索引删除或删除全部超链接 |
 
 ### 插入、批注、水印与页面设置（13）
 
@@ -82,9 +85,20 @@ AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控
 | `insert_toc` / `update_toc` | 插入 / 更新自动目录 |
 | `set_header_footer` / `get_header_footer` | 设置 / 读取页眉页脚（可附加页码域） |
 | `insert_comment` / `list_comments` / `delete_comment` | 插入 / 列出 / 删除批注 |
-| `insert_footnote` | 插入脚注（页面底部） |
+| `insert_footnote` | 插入脚注（真角标；可在指定文本后插入） |
 | `add_watermark` / `remove_watermark` | 添加 / 删除文字水印（斜向或水平） |
 | `get_page_setup` / `set_page_setup` | 读取 / 设置页面设置（纸张、方向、页边距、分栏） |
+
+### 论文增强（8）
+
+| 工具 | 说明 |
+| --- | --- |
+| `insert_endnote` | 插入尾注（可在指定文本后插入角标） |
+| `list_notes` / `get_note` / `delete_note` | 列出 / 读取 / 删除脚注与尾注 |
+| `set_note_options` | 注释编号样式、重编规则、起始编号、脚注位置 |
+| `insert_cross_reference` | 交叉引用：标题 / 书签 / 脚注 / 尾注 / 题注（可点击） |
+| `insert_caption` | 图/表自动编号题注（SEQ 域，支持中英文标签） |
+| `insert_field` | 通用域：PAGEREF / SEQ / NOTEREF / DATE / FILENAME 等 |
 
 ### 样式管理（3）
 
@@ -98,6 +112,7 @@ AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控
 
 ```
 WordMcpServer.sln
+build.ps1                        # 一键构建脚本（还原/构建/注册/启动/测试）
 WordMcpServer/
 ├── WordMcpServer.csproj         # VSTO 项目（.NET Framework 4.8，packages.config）
 ├── packages.config              # NuGet 依赖（ASP.NET Core 2.2 + Newtonsoft.Json）
@@ -114,10 +129,10 @@ WordMcpServer/
 │   ├── Threading/               # Word 主线程封送器（核心！见下文）
 │   ├── Protocol/                # MCP JSON-RPC 处理（initialize/tools/list/tools/call）
 │   ├── Server/                  # Kestrel 自托管 + /mcp 中间件（含 SSE）
-│   └── Tools/                   # 70 个工具：Schema 声明 + 参数校验 + 执行
+│   └── Tools/                   # 81 个工具：Schema 声明 + 参数校验 + 执行
 └── Services/                    # Word 对象模型服务层（IWordService / WordService）
 tests/
-└── run_tests.ps1                # 端到端回归测试（174 项断言）
+└── run_tests.ps1                # 端到端回归测试（214 项断言）
 tools/
 └── nuget.exe                    # packages.config 还原工具
 ```
@@ -146,6 +161,36 @@ tools\nuget.exe restore WordMcpServer.sln
 # 2) 构建（VS 版本自动探测）
 & "D:\VisualStudioCommunity\MSBuild\Current\Bin\MSBuild.exe" WordMcpServer.sln /p:Configuration=Debug
 ```
+
+### 一键构建脚本（build.ps1）
+
+`build.ps1` 封装了完整开发流程：**清理 → 还原 → 构建 → 注册 → 启动 Word → 健康检查 → 可选回归测试**。
+脚本自动定位 MSBuild（vswhere + 常见路径），处理 Word 进程占用，注册插件（VSTOInstaller，
+失败时回退 `|vstolocal` 手工注册），清除 Word 禁用记录，并从 `mcp.config.json` 读取端口做健康检查。
+
+```powershell
+# 只构建（要求 Word 已关闭，否则脚本会提示）
+powershell -ExecutionPolicy Bypass -File build.ps1
+
+# 构建 + 注册 + 启动 Word + 等待 MCP 就绪
+powershell -ExecutionPolicy Bypass -File build.ps1 -StopWord -Register -StartWord
+
+# 开发闭环：构建 → 注册 → 启动 → 跑完整回归测试（214 项）
+powershell -ExecutionPolicy Bypass -File build.ps1 -StopWord -Register -StartWord -Test
+
+# Release 构建（先清理）
+powershell -ExecutionPolicy Bypass -File build.ps1 -Configuration Release -Clean -Register
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `-Configuration Debug\|Release` | 构建配置（默认 Debug） |
+| `-Clean` | 构建前清理 `bin/<配置>` 与 `obj/<配置>` |
+| `-NoRestore` | 跳过 NuGet 还原（packages 已存在时可用） |
+| `-Register` | 注册/启用插件并清除 Word 禁用记录 |
+| `-StopWord` | 构建前强制结束 WINWORD.EXE（**未保存文档会丢失**） |
+| `-StartWord` | 构建后启动 Word 并等待 `/health` 就绪 |
+| `-Test` | 启动后运行 `tests\run_tests.ps1`（214 项断言） |
 
 ### 注册插件（命令行构建后）
 
@@ -256,9 +301,9 @@ powershell -ExecutionPolicy Bypass -File tests\run_tests.ps1
 ```
 
 覆盖：协议握手、工具清单、文档读写、段落格式、富文本、列表、段落底纹、表格增删改合并、
-查找替换、书签、超链接、图片、目录、页眉页脚、批注、脚注、水印、修订、样式管理、
-文档属性、域更新、页面设置、分页分节、光标输入、撤销、保存/备份/导出 PDF/打开/关闭，
-以及 5 类错误路径（共 174 项断言）。
+查找替换、书签、超链接（含内部锚点）、图片、目录、页眉页脚、批注、脚注/尾注、
+题注与交叉引用、水印、修订、样式管理、文档属性、域更新、页面设置、分页分节、
+光标输入、撤销、保存/备份/导出 PDF/打开/关闭，以及 5 类错误路径（共 214 项断言）。
 
 ## 架构与线程模型（必读）
 

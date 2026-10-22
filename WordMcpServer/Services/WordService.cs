@@ -1051,9 +1051,16 @@ namespace WordMcpServer.Services
             return Mutate("插入超链接", () =>
             {
                 var doc = GetActiveDocumentOrThrow();
-                if (string.IsNullOrWhiteSpace(request.Address))
+                if (string.IsNullOrWhiteSpace(request.Address) && string.IsNullOrWhiteSpace(request.Bookmark))
                 {
-                    throw new McpToolException(McpErrorCodes.InvalidParams, "缺少必填参数：address");
+                    throw new McpToolException(McpErrorCodes.InvalidParams,
+                        "必须提供 address（外部链接）或 bookmark（内部锚点）之一");
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.Bookmark) && !doc.Bookmarks.Exists(request.Bookmark))
+                {
+                    throw new McpToolException(McpErrorCodes.BookmarkNotFound,
+                        $"找不到书签：{request.Bookmark}（请先用 insert_bookmark 创建）");
                 }
 
                 Range anchor;
@@ -1072,17 +1079,19 @@ namespace WordMcpServer.Services
                     anchor.Collapse(WdCollapseDirection.wdCollapseStart);
                 }
 
-                object address = request.Address;
-                object subAddress = string.Empty;
+                object address = request.Address ?? string.Empty;
+                object subAddress = request.Bookmark ?? string.Empty;
                 object screenTip = request.ScreenTip ?? string.Empty;
-                object textToDisplay = request.Text ?? request.Address;
+                object textToDisplay = request.Text ?? request.Address ?? request.Bookmark;
                 object target = string.Empty;
-                doc.Hyperlinks.Add(anchor, ref address, ref subAddress, ref screenTip, ref textToDisplay, ref target);
+                var link = doc.Hyperlinks.Add(anchor, ref address, ref subAddress, ref screenTip, ref textToDisplay, ref target);
 
                 return new HyperlinkInfo
                 {
-                    Text = request.Text ?? request.Address,
+                    Index = FindHyperlinkIndex(doc, link),
+                    Text = request.Text ?? request.Address ?? request.Bookmark,
                     Address = request.Address,
+                    SubAddress = request.Bookmark,
                     ScreenTip = request.ScreenTip,
                     ParagraphIndex = index,
                     HyperlinkCount = doc.Hyperlinks.Count,
@@ -2301,9 +2310,22 @@ namespace WordMcpServer.Services
             });
         }
 
-        public FootnoteInfo InsertFootnote(string text, int? paragraphIndex)
+        public NoteInfo InsertFootnote(string text, int? paragraphIndex, string anchorText)
         {
-            return Mutate("插入脚注", () =>
+            return InsertNoteCore("footnote", text, paragraphIndex, anchorText);
+        }
+
+        // ============================== 论文增强：注释 / 超链接 / 交叉引用 / 题注 / 域 ==============================
+
+        public NoteInfo InsertEndnote(string text, int? paragraphIndex, string anchorText)
+        {
+            return InsertNoteCore("endnote", text, paragraphIndex, anchorText);
+        }
+
+        private NoteInfo InsertNoteCore(string noteType, string text, int? paragraphIndex, string anchorText)
+        {
+            var type = NormalizeNoteType(noteType);
+            return Mutate(type == "footnote" ? "插入脚注" : "插入尾注", () =>
             {
                 var doc = GetActiveDocumentOrThrow();
                 if (string.IsNullOrEmpty(text))
@@ -2311,30 +2333,484 @@ namespace WordMcpServer.Services
                     throw new McpToolException(McpErrorCodes.InvalidParams, "缺少必填参数：text");
                 }
 
-                var index = paragraphIndex ?? doc.Paragraphs.Count;
-                var paragraph = GetParagraphOrThrow(doc, index);
-                var range = paragraph.Range;
-                range.Collapse(WdCollapseDirection.wdCollapseEnd);
+                Range referenceRange;
+                if (!string.IsNullOrEmpty(anchorText))
+                {
+                    referenceRange = FindFirstRange(doc, anchorText);
+                    if (referenceRange == null)
+                    {
+                        throw new McpToolException(McpErrorCodes.TextNotFound, $"未找到角标锚点文本：{anchorText}");
+                    }
 
-                object footnoteText = NormalizeText(text) ?? string.Empty;
-                Footnote footnote = null;
+                    referenceRange.Collapse(WdCollapseDirection.wdCollapseEnd);
+                }
+                else
+                {
+                    var index = paragraphIndex ?? doc.Paragraphs.Count;
+                    referenceRange = GetParagraphEndRange(doc, index);
+                }
+
+                object noteText = NormalizeText(text) ?? string.Empty;
+                object referenceMark = Type.Missing;
+                int noteIndex;
+                int referenceStart;
+                string noteContent;
+                int noteCount;
+
+                if (type == "footnote")
+                {
+                    Footnote note = null;
+                    try
+                    {
+                        // PIA 参数顺序为 (Range, Reference, Text)：Reference 是自定义引用标记，Text 是注释内容
+                        note = doc.Footnotes.Add(referenceRange, ref referenceMark, ref noteText);
+                        noteIndex = note.Index;
+                        referenceStart = SafeRead(() => note.Reference.Start);
+                        noteContent = TrimParagraphText(SafeRead(() => note.Range.Text));
+                        noteCount = doc.Footnotes.Count;
+                    }
+                    finally
+                    {
+                        TryRelease(note);
+                    }
+                }
+                else
+                {
+                    Endnote note = null;
+                    try
+                    {
+                        note = doc.Endnotes.Add(referenceRange, ref referenceMark, ref noteText);
+                        noteIndex = note.Index;
+                        referenceStart = SafeRead(() => note.Reference.Start);
+                        noteContent = TrimParagraphText(SafeRead(() => note.Range.Text));
+                        noteCount = doc.Endnotes.Count;
+                    }
+                    finally
+                    {
+                        TryRelease(note);
+                    }
+                }
+
+                var referenceParagraph = GetParagraphIndexAt(doc, referenceStart);
+                return new NoteInfo
+                {
+                    NoteType = type,
+                    Index = noteIndex,
+                    Text = noteContent,
+                    ReferenceParagraphIndex = referenceParagraph,
+                    ReferenceText = GetParagraphPreview(doc, referenceParagraph),
+                    NoteCount = noteCount,
+                };
+            });
+        }
+
+        public List<NoteInfo> ListNotes(string noteType)
+        {
+            return Run("列出注释", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var type = NormalizeNoteType(noteType);
+                var result = new List<NoteInfo>();
+                var count = type == "footnote" ? doc.Footnotes.Count : doc.Endnotes.Count;
+                for (var i = 1; i <= count && result.Count < 1000; i++)
+                {
+                    result.Add(DescribeNote(doc, type, i));
+                }
+
+                return result;
+            });
+        }
+
+        public NoteInfo GetNote(string noteType, int index)
+        {
+            return Run("读取注释", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var type = NormalizeNoteType(noteType);
+                ValidateNoteIndex(doc, type, index);
+                return DescribeNote(doc, type, index);
+            });
+        }
+
+        public void DeleteNote(string noteType, int index)
+        {
+            Mutate("删除注释", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var type = NormalizeNoteType(noteType);
+                ValidateNoteIndex(doc, type, index);
+                if (type == "footnote")
+                {
+                    doc.Footnotes[index].Delete();
+                }
+                else
+                {
+                    doc.Endnotes[index].Delete();
+                }
+
+                return 0;
+            });
+        }
+
+        public NoteOptionsInfo SetNoteOptions(SetNoteOptionsRequest request)
+        {
+            return Mutate("设置注释编号", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var type = NormalizeNoteType(request.NoteType);
+
+                if (type == "footnote")
+                {
+                    var notes = doc.Footnotes;
+                    if (!string.IsNullOrEmpty(request.NumberStyle))
+                    {
+                        notes.NumberStyle = ParseNoteNumberStyle(request.NumberStyle);
+                    }
+
+                    if (!string.IsNullOrEmpty(request.NumberingRule))
+                    {
+                        notes.NumberingRule = ParseNumberingRule(request.NumberingRule);
+                    }
+
+                    if (request.StartingNumber.HasValue)
+                    {
+                        ValidateStartingNumber(request.StartingNumber.Value);
+                        notes.StartingNumber = request.StartingNumber.Value;
+                    }
+
+                    if (!string.IsNullOrEmpty(request.Location))
+                    {
+                        notes.Location = ParseFootnoteLocation(request.Location);
+                    }
+                }
+                else
+                {
+                    var notes = doc.Endnotes;
+                    if (!string.IsNullOrEmpty(request.NumberStyle))
+                    {
+                        notes.NumberStyle = ParseNoteNumberStyle(request.NumberStyle);
+                    }
+
+                    if (!string.IsNullOrEmpty(request.NumberingRule))
+                    {
+                        notes.NumberingRule = ParseNumberingRule(request.NumberingRule);
+                    }
+
+                    if (request.StartingNumber.HasValue)
+                    {
+                        ValidateStartingNumber(request.StartingNumber.Value);
+                        notes.StartingNumber = request.StartingNumber.Value;
+                    }
+                }
+
+                return DescribeNoteOptions(doc, type);
+            });
+        }
+
+        public List<HyperlinkInfo> ListHyperlinks()
+        {
+            return Run("列出超链接", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var result = new List<HyperlinkInfo>();
+                var count = doc.Hyperlinks.Count;
+                for (var i = 1; i <= count && result.Count < 1000; i++)
+                {
+                    result.Add(DescribeHyperlink(doc, i));
+                }
+
+                return result;
+            });
+        }
+
+        public HyperlinkInfo UpdateHyperlink(UpdateHyperlinkRequest request)
+        {
+            return Mutate("修改超链接", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var count = doc.Hyperlinks.Count;
+                if (request.Index < 1 || request.Index > count)
+                {
+                    throw new McpToolException(McpErrorCodes.HyperlinkNotFound,
+                        $"超链接索引 {request.Index} 超出范围（当前共 {count} 个）");
+                }
+
+                Hyperlink link = null;
                 try
                 {
-                    footnote = doc.Footnotes.Add(range, ref footnoteText);
-                    return new FootnoteInfo
+                    link = doc.Hyperlinks[request.Index];
+                    if (request.Text != null) link.TextToDisplay = request.Text;
+                    if (request.Address != null) link.Address = request.Address;
+                    if (request.Bookmark != null) link.SubAddress = request.Bookmark;
+                    if (request.ScreenTip != null) link.ScreenTip = request.ScreenTip;
+                    return DescribeHyperlink(doc, request.Index);
+                }
+                finally
+                {
+                    TryRelease(link);
+                }
+            });
+        }
+
+        public int DeleteHyperlinks(int? index, bool all)
+        {
+            return Mutate("删除超链接", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var count = doc.Hyperlinks.Count;
+                if (all)
+                {
+                    for (var i = count; i >= 1; i--)
                     {
-                        Index = doc.Footnotes.Count,
-                        Text = TrimParagraphText(SafeRead(() => footnote.Range.Text)),
-                        ParagraphIndex = index,
-                        FootnoteCount = doc.Footnotes.Count,
+                        doc.Hyperlinks[i].Delete();
+                    }
+
+                    return count;
+                }
+
+                if (!index.HasValue)
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "必须提供 index 或 all=true");
+                }
+
+                if (index.Value < 1 || index.Value > count)
+                {
+                    throw new McpToolException(McpErrorCodes.HyperlinkNotFound,
+                        $"超链接索引 {index.Value} 超出范围（当前共 {count} 个）");
+                }
+
+                doc.Hyperlinks[index.Value].Delete();
+                return 1;
+            });
+        }
+
+        public CrossReferenceResult InsertCrossReference(CrossReferenceRequest request)
+        {
+            return Mutate("插入交叉引用", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var type = (request.ReferenceType ?? string.Empty).Trim().ToLowerInvariant();
+                object referenceType;
+                switch (type)
+                {
+                    case "heading":
+                        referenceType = WdReferenceType.wdRefTypeHeading;
+                        break;
+                    case "bookmark":
+                        referenceType = WdReferenceType.wdRefTypeBookmark;
+                        break;
+                    case "footnote":
+                        referenceType = WdReferenceType.wdRefTypeFootnote;
+                        break;
+                    case "endnote":
+                        referenceType = WdReferenceType.wdRefTypeEndnote;
+                        break;
+                    case "caption":
+                        if (string.IsNullOrWhiteSpace(request.CaptionLabel))
+                        {
+                            throw new McpToolException(McpErrorCodes.InvalidParams,
+                                "caption 类型需要 caption_label（如 图 / 表）");
+                        }
+
+                        referenceType = ResolveCaptionLabel(request.CaptionLabel);
+                        break;
+                    default:
+                        throw new McpToolException(McpErrorCodes.UnsupportedType,
+                            $"不支持的引用类型：{request.ReferenceType}（支持 heading / bookmark / footnote / endnote / caption）");
+                }
+
+                if (string.IsNullOrWhiteSpace(request.ReferenceItem))
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "缺少必填参数：reference_item");
+                }
+
+                object referenceItem;
+                if (type == "footnote" || type == "endnote" || type == "caption")
+                {
+                    if (!int.TryParse(request.ReferenceItem.Trim(), out var ordinal) || ordinal < 1)
+                    {
+                        throw new McpToolException(McpErrorCodes.InvalidParams,
+                            $"{type} 的 reference_item 必须是正整数编号");
+                    }
+
+                    referenceItem = ordinal;
+                }
+                else
+                {
+                    referenceItem = request.ReferenceItem.Trim();
+                }
+
+                var kind = ParseReferenceKind(request.ReferenceKind, type);
+                Range target;
+                int paragraphIndex;
+                if (request.ParagraphIndex.HasValue)
+                {
+                    paragraphIndex = request.ParagraphIndex.Value;
+                    target = GetParagraphEndRange(doc, paragraphIndex);
+                }
+                else
+                {
+                    paragraphIndex = AddParagraphCore(doc, null, null);
+                    target = doc.Paragraphs[paragraphIndex].Range;
+                    target.Collapse(WdCollapseDirection.wdCollapseStart);
+                }
+
+                object asHyperlink = request.InsertAsHyperlink;
+                object includePosition = false;
+                object separateNumbers = false;
+                object separator = ", ";
+
+                try
+                {
+                    target.InsertCrossReference(ref referenceType, kind, ref referenceItem, ref asHyperlink,
+                        ref includePosition, ref separateNumbers, ref separator);
+                }
+                catch (Exception ex) when (!(ex is McpToolException))
+                {
+                    throw new McpToolException(McpErrorCodes.OperationFailed,
+                        $"插入交叉引用失败：{ex.Message}（请确认引用目标存在且类型匹配）");
+                }
+
+                return new CrossReferenceResult
+                {
+                    Inserted = true,
+                    ReferenceType = type,
+                    ReferenceKind = DescribeReferenceKind(kind),
+                    ParagraphIndex = paragraphIndex,
+                    ParagraphCount = doc.Paragraphs.Count,
+                };
+            });
+        }
+
+        public CaptionResult InsertCaption(InsertCaptionRequest request)
+        {
+            return Mutate("插入题注", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var label = ResolveCaptionLabel(request.Label);
+                var position = (request.Position ?? "below").Trim().ToLowerInvariant();
+                if (position != "above" && position != "below")
+                {
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的题注位置：{request.Position}（支持 above / below）");
+                }
+
+                var targetIndex = request.ParagraphIndex ?? doc.Paragraphs.Count;
+                var paragraph = GetParagraphOrThrow(doc, targetIndex);
+                var range = paragraph.Range;
+
+                var title = NormalizeText(request.Title) ?? string.Empty;
+                if (title.Length > 0 && !char.IsWhiteSpace(title[0]))
+                {
+                    title = " " + title;
+                }
+
+                object labelObj = label;
+                object titleObj = title;
+                object titleAutoText = Type.Missing;
+                object positionObj = position == "above"
+                    ? WdCaptionPosition.wdCaptionPositionAbove
+                    : WdCaptionPosition.wdCaptionPositionBelow;
+                object excludeLabel = false;
+
+                try
+                {
+                    range.InsertCaption(ref labelObj, ref titleObj, ref titleAutoText, ref positionObj, ref excludeLabel);
+                }
+                catch (Exception ex) when (!(ex is McpToolException))
+                {
+                    throw new McpToolException(McpErrorCodes.OperationFailed, $"插入题注失败：{ex.Message}");
+                }
+
+                // 定位刚插入的题注段落（InsertCaption 在目标段落前/后插入新段落）
+                var captionIndex = -1;
+                var searchFrom = Math.Max(1, targetIndex - 1);
+                var searchTo = Math.Min(doc.Paragraphs.Count, targetIndex + 2);
+                for (var i = searchFrom; i <= searchTo; i++)
+                {
+                    var captionText = SafeRead(() => doc.Paragraphs[i].Range.Text) ?? string.Empty;
+                    if (captionText.Contains(label) &&
+                        (string.IsNullOrEmpty(request.Title) || captionText.Contains(request.Title)))
+                    {
+                        captionIndex = i;
+                        break;
+                    }
+                }
+
+                if (captionIndex < 0)
+                {
+                    captionIndex = position == "above"
+                        ? targetIndex
+                        : Math.Min(targetIndex + 1, doc.Paragraphs.Count);
+                }
+
+                return new CaptionResult
+                {
+                    Label = label,
+                    Title = request.Title,
+                    Position = position,
+                    ParagraphIndex = captionIndex,
+                    ParagraphCount = doc.Paragraphs.Count,
+                };
+            });
+        }
+
+        public FieldInfoResult InsertField(InsertFieldRequest request)
+        {
+            return Mutate("插入域", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                if (string.IsNullOrWhiteSpace(request.FieldCode))
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "缺少必填参数：field_code");
+                }
+
+                Range target;
+                if (request.ParagraphIndex.HasValue)
+                {
+                    target = GetParagraphEndRange(doc, request.ParagraphIndex.Value);
+                }
+                else
+                {
+                    var index = AddParagraphCore(doc, null, null);
+                    target = doc.Paragraphs[index].Range;
+                    target.Collapse(WdCollapseDirection.wdCollapseStart);
+                }
+
+                object fieldType = WdFieldType.wdFieldEmpty;
+                object code = request.FieldCode.Trim();
+                object preserveFormatting = false;
+                Field field = null;
+                try
+                {
+                    field = doc.Fields.Add(target, ref fieldType, ref code, ref preserveFormatting);
+                    if (request.Update)
+                    {
+                        try
+                        {
+                            field.Update();
+                        }
+                        catch
+                        {
+                            // 域暂时无法更新（如引用目标尚不存在）时保留原始代码
+                        }
+                    }
+
+                    return new FieldInfoResult
+                    {
+                        Index = FindFieldIndex(doc, field),
+                        Code = SafeRead(() => field.Code.Text)?.Trim(),
+                        Result = SafeRead(() => field.Result.Text)?.Trim(),
+                        FieldCount = doc.Fields.Count,
                     };
                 }
                 finally
                 {
-                    TryRelease(footnote);
+                    TryRelease(field);
                 }
             });
         }
+
 
         // ============================== 私有实现 ==============================
 
@@ -2525,6 +3001,21 @@ namespace WordMcpServer.Services
             }
 
             return doc.Paragraphs[paragraphIndex];
+        }
+
+        /// <summary>
+        /// 返回段落末尾（段落标记之前）的折叠范围。
+        /// 注意：Paragraph.Range.Collapse(end) 会落在段落标记之后（下一段开头），
+        /// 向段落末尾追加内容必须用本方法定位。
+        /// </summary>
+        private static Range GetParagraphEndRange(Document doc, int paragraphIndex)
+        {
+            var paragraph = GetParagraphOrThrow(doc, paragraphIndex);
+            var paragraphRange = paragraph.Range;
+            var position = Math.Max(paragraphRange.Start, paragraphRange.End - 1);
+            object start = position;
+            object end = position;
+            return doc.Range(ref start, ref end);
         }
 
         private static Section GetSectionOrThrow(Document doc, int sectionIndex)
@@ -3825,6 +4316,8 @@ namespace WordMcpServer.Services
 
             if (run.ColorArgb.HasValue) font.Color = ArgbToWdColor(run.ColorArgb.Value);
             if (!string.IsNullOrEmpty(run.Highlight)) range.HighlightColorIndex = ParseHighlight(run.Highlight);
+            if (run.Superscript.HasValue) font.Superscript = run.Superscript.Value ? -1 : 0;
+            if (run.Subscript.HasValue) font.Subscript = run.Subscript.Value ? -1 : 0;
         }
 
         private static WdStyleType ParseStyleType(string type)
@@ -4170,6 +4663,467 @@ namespace WordMcpServer.Services
             }
 
             return removed;
+        }
+
+        // ---------- 论文增强辅助 ----------
+
+        /// <summary>
+        /// 解析题注标签：优先匹配现有标签（兼容中文“图表/表格”与英文“Figure/Table”），
+        /// 不存在时创建自定义标签。
+        /// </summary>
+        private string ResolveCaptionLabel(string label)
+        {
+            var requested = string.IsNullOrWhiteSpace(label) ? "图" : label.Trim();
+            string[] candidates;
+            switch (requested.ToLowerInvariant())
+            {
+                case "图":
+                case "图表":
+                    candidates = new[] { "图表", "图", "Figure" };
+                    break;
+                case "figure":
+                case "fig":
+                    candidates = new[] { "Figure", "图表", "图" };
+                    break;
+                case "表":
+                case "表格":
+                    candidates = new[] { "表格", "表", "Table" };
+                    break;
+                case "table":
+                    candidates = new[] { "Table", "表格", "表" };
+                    break;
+                case "公式":
+                    candidates = new[] { "公式", "Equation" };
+                    break;
+                case "equation":
+                case "formula":
+                    candidates = new[] { "Equation", "公式" };
+                    break;
+                default:
+                    candidates = new[] { requested };
+                    break;
+            }
+
+            var existing = new List<string>();
+            try
+            {
+                var labels = _app.CaptionLabels;
+                for (var i = 1; i <= labels.Count; i++)
+                {
+                    CaptionLabel captionLabel = null;
+                    try
+                    {
+                        captionLabel = labels[i];
+                        existing.Add(captionLabel.Name);
+                    }
+                    catch
+                    {
+                        // 忽略单个标签读取失败
+                    }
+                    finally
+                    {
+                        TryRelease(captionLabel);
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略（无文档等场景）
+            }
+
+            foreach (var candidate in candidates)
+            {
+                foreach (var name in existing)
+                {
+                    if (string.Equals(name, candidate, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return name;
+                    }
+                }
+            }
+
+            try
+            {
+                var created = _app.CaptionLabels.Add(requested);
+                if (created != null && !string.IsNullOrEmpty(created.Name))
+                {
+                    return created.Name;
+                }
+            }
+            catch
+            {
+                // 创建失败时回退到请求值
+            }
+
+            return requested;
+        }
+
+        private static string NormalizeNoteType(string noteType)
+        {
+            var type = (noteType ?? "footnote").Trim().ToLowerInvariant();
+            switch (type)
+            {
+                case "footnote":
+                case "footnotes":
+                case "脚注":
+                    return "footnote";
+                case "endnote":
+                case "endnotes":
+                case "尾注":
+                    return "endnote";
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的注释类型：{noteType}（支持 footnote / endnote）");
+            }
+        }
+
+        private static void ValidateNoteIndex(Document doc, string type, int index)
+        {
+            var count = type == "footnote" ? doc.Footnotes.Count : doc.Endnotes.Count;
+            if (index < 1 || index > count)
+            {
+                throw new McpToolException(McpErrorCodes.NoteNotFound,
+                    $"注释索引 {index} 超出范围（当前共 {count} 个{(type == "footnote" ? "脚注" : "尾注")}）");
+            }
+        }
+
+        private static void ValidateStartingNumber(int startingNumber)
+        {
+            if (startingNumber < 1)
+            {
+                throw new McpToolException(McpErrorCodes.InvalidParams, "starting_number 必须 >= 1");
+            }
+        }
+
+        private static NoteInfo DescribeNote(Document doc, string type, int index)
+        {
+            int referenceStart;
+            string noteText;
+            int noteCount;
+            if (type == "footnote")
+            {
+                Footnote note = null;
+                try
+                {
+                    note = doc.Footnotes[index];
+                    referenceStart = SafeRead(() => note.Reference.Start);
+                    noteText = TrimParagraphText(SafeRead(() => note.Range.Text));
+                    noteCount = doc.Footnotes.Count;
+                }
+                finally
+                {
+                    TryRelease(note);
+                }
+            }
+            else
+            {
+                Endnote note = null;
+                try
+                {
+                    note = doc.Endnotes[index];
+                    referenceStart = SafeRead(() => note.Reference.Start);
+                    noteText = TrimParagraphText(SafeRead(() => note.Range.Text));
+                    noteCount = doc.Endnotes.Count;
+                }
+                finally
+                {
+                    TryRelease(note);
+                }
+            }
+
+            var referenceParagraph = GetParagraphIndexAt(doc, referenceStart);
+            return new NoteInfo
+            {
+                NoteType = type,
+                Index = index,
+                Text = noteText,
+                ReferenceParagraphIndex = referenceParagraph,
+                ReferenceText = GetParagraphPreview(doc, referenceParagraph),
+                NoteCount = noteCount,
+            };
+        }
+
+        private static string GetParagraphPreview(Document doc, int paragraphIndex)
+        {
+            if (paragraphIndex < 1 || paragraphIndex > SafeRead(() => doc.Paragraphs.Count))
+            {
+                return null;
+            }
+
+            var text = TrimParagraphText(SafeRead(() => doc.Paragraphs[paragraphIndex].Range.Text));
+            if (text == null)
+            {
+                return null;
+            }
+
+            return text.Length > 120 ? text.Substring(0, 120) + "…" : text;
+        }
+
+        private static NoteOptionsInfo DescribeNoteOptions(Document doc, string type)
+        {
+            var info = new NoteOptionsInfo
+            {
+                NoteType = type,
+                Location = type == "footnote" ? "bottom" : null,
+            };
+
+            if (type == "footnote")
+            {
+                var notes = doc.Footnotes;
+                info.NumberStyle = SafeRead(() => DescribeNoteNumberStyle(notes.NumberStyle));
+                info.NumberingRule = SafeRead(() => DescribeNumberingRule(notes.NumberingRule));
+                info.StartingNumber = SafeRead(() => notes.StartingNumber);
+                info.Location = SafeRead(() => DescribeFootnoteLocation(notes.Location));
+                info.NoteCount = SafeRead(() => notes.Count);
+            }
+            else
+            {
+                var notes = doc.Endnotes;
+                info.NumberStyle = SafeRead(() => DescribeNoteNumberStyle(notes.NumberStyle));
+                info.NumberingRule = SafeRead(() => DescribeNumberingRule(notes.NumberingRule));
+                info.StartingNumber = SafeRead(() => notes.StartingNumber);
+                info.NoteCount = SafeRead(() => notes.Count);
+            }
+
+            return info;
+        }
+
+        private static WdNoteNumberStyle ParseNoteNumberStyle(string style)
+        {
+            switch (style.Trim().ToLowerInvariant())
+            {
+                case "arabic":
+                case "1":
+                    return WdNoteNumberStyle.wdNoteNumberStyleArabic;
+                case "upper-roman":
+                case "i":
+                    return WdNoteNumberStyle.wdNoteNumberStyleUppercaseRoman;
+                case "lower-roman":
+                case "ii":
+                    return WdNoteNumberStyle.wdNoteNumberStyleLowercaseRoman;
+                case "upper-letter":
+                case "a":
+                    return WdNoteNumberStyle.wdNoteNumberStyleUppercaseLetter;
+                case "lower-letter":
+                case "b":
+                    return WdNoteNumberStyle.wdNoteNumberStyleLowercaseLetter;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的编号样式：{style}（支持 arabic / upper-roman / lower-roman / upper-letter / lower-letter）");
+            }
+        }
+
+        private static string DescribeNoteNumberStyle(WdNoteNumberStyle style)
+        {
+            switch (style)
+            {
+                case WdNoteNumberStyle.wdNoteNumberStyleArabic: return "arabic";
+                case WdNoteNumberStyle.wdNoteNumberStyleUppercaseRoman: return "upper-roman";
+                case WdNoteNumberStyle.wdNoteNumberStyleLowercaseRoman: return "lower-roman";
+                case WdNoteNumberStyle.wdNoteNumberStyleUppercaseLetter: return "upper-letter";
+                case WdNoteNumberStyle.wdNoteNumberStyleLowercaseLetter: return "lower-letter";
+                default: return style.ToString();
+            }
+        }
+
+        private static WdNumberingRule ParseNumberingRule(string rule)
+        {
+            switch (rule.Trim().ToLowerInvariant())
+            {
+                case "continuous":
+                case "restart-continuous":
+                    return WdNumberingRule.wdRestartContinuous;
+                case "restart-section":
+                case "section":
+                    return WdNumberingRule.wdRestartSection;
+                case "restart-page":
+                case "page":
+                    return WdNumberingRule.wdRestartPage;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的编号规则：{rule}（支持 continuous / restart-section / restart-page）");
+            }
+        }
+
+        private static string DescribeNumberingRule(WdNumberingRule rule)
+        {
+            switch (rule)
+            {
+                case WdNumberingRule.wdRestartContinuous: return "continuous";
+                case WdNumberingRule.wdRestartSection: return "restart-section";
+                case WdNumberingRule.wdRestartPage: return "restart-page";
+                default: return rule.ToString();
+            }
+        }
+
+        private static WdFootnoteLocation ParseFootnoteLocation(string location)
+        {
+            switch (location.Trim().ToLowerInvariant())
+            {
+                case "bottom":
+                case "bottom-of-page":
+                    return WdFootnoteLocation.wdBottomOfPage;
+                case "beneath-text":
+                case "beneath":
+                    return WdFootnoteLocation.wdBeneathText;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的脚注位置：{location}（支持 bottom / beneath-text）");
+            }
+        }
+
+        private static string DescribeFootnoteLocation(WdFootnoteLocation location)
+        {
+            switch (location)
+            {
+                case WdFootnoteLocation.wdBottomOfPage: return "bottom";
+                case WdFootnoteLocation.wdBeneathText: return "beneath-text";
+                default: return location.ToString();
+            }
+        }
+
+        private static HyperlinkInfo DescribeHyperlink(Document doc, int index)
+        {
+            Hyperlink link = null;
+            try
+            {
+                link = doc.Hyperlinks[index];
+                var start = SafeRead(() => link.Range.Start);
+                return new HyperlinkInfo
+                {
+                    Index = index,
+                    Text = SafeRead(() => link.TextToDisplay),
+                    Address = SafeRead(() => link.Address),
+                    SubAddress = SafeRead(() => link.SubAddress),
+                    ScreenTip = SafeRead(() => link.ScreenTip),
+                    ParagraphIndex = GetParagraphIndexAt(doc, start),
+                    HyperlinkCount = doc.Hyperlinks.Count,
+                };
+            }
+            finally
+            {
+                TryRelease(link);
+            }
+        }
+
+        private static int FindHyperlinkIndex(Document doc, Hyperlink link)
+        {
+            try
+            {
+                var start = link.Range.Start;
+                for (var i = 1; i <= doc.Hyperlinks.Count; i++)
+                {
+                    Hyperlink candidate = null;
+                    try
+                    {
+                        candidate = doc.Hyperlinks[i];
+                        if (candidate.Range.Start == start)
+                        {
+                            return i;
+                        }
+                    }
+                    finally
+                    {
+                        TryRelease(candidate);
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略
+            }
+
+            return doc.Hyperlinks.Count;
+        }
+
+        private static WdReferenceKind ParseReferenceKind(string kind, string referenceType)
+        {
+            var key = (kind ?? string.Empty).Trim().ToLowerInvariant();
+            if (key.Length == 0)
+            {
+                switch (referenceType)
+                {
+                    case "footnote": return WdReferenceKind.wdFootnoteNumber;
+                    case "endnote": return WdReferenceKind.wdEndnoteNumber;
+                    case "caption": return WdReferenceKind.wdOnlyLabelAndNumber;
+                    default: return WdReferenceKind.wdContentText;
+                }
+            }
+
+            switch (key)
+            {
+                case "text":
+                case "content":
+                    return referenceType == "caption"
+                        ? WdReferenceKind.wdOnlyCaptionText
+                        : WdReferenceKind.wdContentText;
+                case "number":
+                    switch (referenceType)
+                    {
+                        case "footnote": return WdReferenceKind.wdFootnoteNumber;
+                        case "endnote": return WdReferenceKind.wdEndnoteNumber;
+                        case "caption": return WdReferenceKind.wdOnlyLabelAndNumber;
+                        default: return WdReferenceKind.wdNumberFullContext;
+                    }
+
+                case "label-and-number":
+                case "label":
+                    return WdReferenceKind.wdOnlyLabelAndNumber;
+                case "entire-caption":
+                case "caption":
+                    return WdReferenceKind.wdEntireCaption;
+                case "page":
+                    return WdReferenceKind.wdPageNumber;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的引用方式：{kind}（支持 text / number / page / label-and-number / entire-caption）");
+            }
+        }
+
+        private static string DescribeReferenceKind(WdReferenceKind kind)
+        {
+            switch (kind)
+            {
+                case WdReferenceKind.wdContentText: return "text";
+                case WdReferenceKind.wdNumberFullContext: return "number";
+                case WdReferenceKind.wdOnlyLabelAndNumber: return "label-and-number";
+                case WdReferenceKind.wdOnlyCaptionText: return "text";
+                case WdReferenceKind.wdEntireCaption: return "entire-caption";
+                case WdReferenceKind.wdFootnoteNumber: return "number";
+                case WdReferenceKind.wdEndnoteNumber: return "number";
+                case WdReferenceKind.wdPageNumber: return "page";
+                default: return kind.ToString();
+            }
+        }
+
+        private static int FindFieldIndex(Document doc, Field field)
+        {
+            try
+            {
+                var start = field.Result.Start;
+                for (var i = 1; i <= doc.Fields.Count; i++)
+                {
+                    Field candidate = null;
+                    try
+                    {
+                        candidate = doc.Fields[i];
+                        if (candidate.Result.Start == start)
+                        {
+                            return i;
+                        }
+                    }
+                    finally
+                    {
+                        TryRelease(candidate);
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略
+            }
+
+            return doc.Fields.Count;
         }
 
         /// <summary>

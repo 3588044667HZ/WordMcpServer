@@ -410,6 +410,8 @@ namespace WordMcpServer.Mcp.Tools
                         ["italic"] = Bool("斜体"),
                         ["underline"] = Bool("下划线"),
                         ["highlight"] = Str("突出显示颜色"),
+                        ["superscript"] = Bool("上标"),
+                        ["subscript"] = Bool("下标"),
                     },
                     ["required"] = new JArray { "text" },
                 },

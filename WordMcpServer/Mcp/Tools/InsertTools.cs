@@ -267,20 +267,22 @@ namespace WordMcpServer.Mcp.Tools
 
         public override string Name => "insert_footnote";
 
-        public override string Description => "在指定段落末尾插入脚注（缺省最后一个段落）。脚注引用标记位于段落末尾，脚注内容显示在页面底部。";
+        public override string Description => "插入脚注（真角标）：默认在指定段落末尾插入引用标记；提供 anchor_text 时在该文本之后插入。脚注内容显示在页面底部。";
 
         public override JObject InputSchema => Schema(new JObject
         {
             ["text"] = Str("脚注内容"),
             ["paragraph_index"] = Int("目标段落（1 基，可选）；缺省最后一个段落", 1),
+            ["anchor_text"] = Str("角标锚点文本：在该文本之后插入引用标记（可选，优先于 paragraph_index）"),
         }, "text");
 
         public override JObject Execute(JObject arguments)
         {
             var text = ToolArgumentValidator.RequireString(arguments, "text");
             var paragraphIndex = ToolArgumentValidator.OptionalInt(arguments, "paragraph_index", 1);
-            Logger.Debug($"执行 insert_footnote，paragraphIndex={paragraphIndex}");
-            return JObject.FromObject(Service.InsertFootnote(text, paragraphIndex));
+            var anchorText = ToolArgumentValidator.OptionalString(arguments, "anchor_text");
+            Logger.Debug($"执行 insert_footnote，paragraphIndex={paragraphIndex}，anchorText={anchorText}");
+            return JObject.FromObject(Service.InsertFootnote(text, paragraphIndex, anchorText));
         }
     }
 }
