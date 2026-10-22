@@ -190,20 +190,33 @@ namespace WordMcpServer.Mcp.Tools
 
         public override string Name => "export_to_pdf";
 
-        public override string Description => "把当前文档导出为 PDF 文件（export_as_fixed_format）。output_path 必须以 .pdf 结尾，目录需已存在。";
+        public override string Description => "把当前文档导出为 PDF（ExportAsFixedFormat）。支持整篇/当前页/选区/起止页导出，可启用 PDF/A 与标题书签。output_path 必须以 .pdf 结尾。";
 
         public override JObject InputSchema => Schema(new JObject
         {
             ["output_path"] = Str("PDF 输出完整路径（必须以 .pdf 结尾）"),
             ["open_after_export"] = Bool("导出后是否用默认阅读器打开，默认 false"),
+            ["range"] = Str("导出范围", "all", "selection", "current-page", "from-to"),
+            ["from_page"] = Int("起始页（range=from-to 时必填）", 1),
+            ["to_page"] = Int("结束页（range=from-to 时必填）", 1),
+            ["pdf_a"] = Bool("是否导出 PDF/A 归档格式，默认 false"),
+            ["create_bookmarks"] = Bool("是否为标题创建书签，默认 true"),
         }, "output_path");
 
         public override JObject Execute(JObject arguments)
         {
-            var outputPath = ToolArgumentValidator.RequireString(arguments, "output_path");
-            var openAfterExport = ToolArgumentValidator.OptionalBool(arguments, "open_after_export") ?? false;
-            Logger.Debug($"执行 export_to_pdf，outputPath={outputPath}");
-            return JObject.FromObject(Service.ExportToPdf(outputPath, openAfterExport));
+            var request = new ExportPdfRequest
+            {
+                OutputPath = ToolArgumentValidator.RequireString(arguments, "output_path"),
+                OpenAfterExport = ToolArgumentValidator.OptionalBool(arguments, "open_after_export") ?? false,
+                Range = ToolArgumentValidator.OptionalString(arguments, "range") ?? "all",
+                FromPage = ToolArgumentValidator.OptionalInt(arguments, "from_page", 1),
+                ToPage = ToolArgumentValidator.OptionalInt(arguments, "to_page", 1),
+                PdfA = ToolArgumentValidator.OptionalBool(arguments, "pdf_a") ?? false,
+                CreateBookmarks = ToolArgumentValidator.OptionalBool(arguments, "create_bookmarks") ?? true,
+            };
+            Logger.Debug($"执行 export_to_pdf，outputPath={request.OutputPath}，range={request.Range}");
+            return JObject.FromObject(Service.ExportToPdf(request));
         }
     }
 
@@ -405,6 +418,141 @@ namespace WordMcpServer.Mcp.Tools
         {
             Logger.Debug("执行 reject_revisions");
             return JObject.FromObject(Service.RejectRevisions());
+        }
+    }
+
+    /// <summary>列出修订。</summary>
+    public sealed class ListRevisionsTool : ToolBase
+    {
+        public ListRevisionsTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "list_revisions";
+
+        public override string Description => "列出文档中的修订（索引、类型、作者、时间、文本、所在段落）。";
+
+        public override JObject InputSchema => EmptySchema();
+
+        public override JObject Execute(JObject arguments)
+        {
+            Logger.Debug("执行 list_revisions");
+            var revisions = Service.ListRevisions();
+            return new JObject
+            {
+                ["count"] = revisions.Count,
+                ["revisions"] = JArray.FromObject(revisions),
+            };
+        }
+    }
+
+    /// <summary>接受单条修订。</summary>
+    public sealed class AcceptRevisionTool : ToolBase
+    {
+        public AcceptRevisionTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "accept_revision";
+
+        public override string Description => "按索引接受单条修订（索引来自 list_revisions）。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["index"] = Int("修订索引（1 基）", 1),
+        }, "index");
+
+        public override JObject Execute(JObject arguments)
+        {
+            var index = ToolArgumentValidator.RequireInt(arguments, "index", 1);
+            Logger.Debug($"执行 accept_revision，index={index}");
+            return JObject.FromObject(Service.AcceptRevision(index));
+        }
+    }
+
+    /// <summary>拒绝单条修订。</summary>
+    public sealed class RejectRevisionTool : ToolBase
+    {
+        public RejectRevisionTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "reject_revision";
+
+        public override string Description => "按索引拒绝单条修订（索引来自 list_revisions）。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["index"] = Int("修订索引（1 基）", 1),
+        }, "index");
+
+        public override JObject Execute(JObject arguments)
+        {
+            var index = ToolArgumentValidator.RequireInt(arguments, "index", 1);
+            Logger.Debug($"执行 reject_revision，index={index}");
+            return JObject.FromObject(Service.RejectRevision(index));
+        }
+    }
+
+    /// <summary>保护文档。</summary>
+    public sealed class ProtectDocumentTool : ToolBase
+    {
+        public ProtectDocumentTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "protect_document";
+
+        public override string Description => "保护文档：read-only（只读）/ comments（仅批注）/ forms（仅表单）/ revisions（仅修订）。可选密码。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["type"] = Str("保护类型", "read-only", "comments", "forms", "revisions"),
+            ["password"] = Str("保护密码（可选）"),
+        }, "type");
+
+        public override JObject Execute(JObject arguments)
+        {
+            var type = ToolArgumentValidator.RequireString(arguments, "type");
+            var password = ToolArgumentValidator.OptionalString(arguments, "password");
+            Logger.Debug($"执行 protect_document，type={type}");
+            return JObject.FromObject(Service.ProtectDocument(type, password));
+        }
+    }
+
+    /// <summary>取消文档保护。</summary>
+    public sealed class UnprotectDocumentTool : ToolBase
+    {
+        public UnprotectDocumentTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "unprotect_document";
+
+        public override string Description => "取消文档保护（如设置过密码需提供）。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["password"] = Str("保护密码（可选）"),
+        });
+
+        public override JObject Execute(JObject arguments)
+        {
+            var password = ToolArgumentValidator.OptionalString(arguments, "password");
+            Logger.Debug("执行 unprotect_document");
+            return JObject.FromObject(Service.UnprotectDocument(password));
+        }
+    }
+
+    /// <summary>标记为最终状态。</summary>
+    public sealed class MarkAsFinalTool : ToolBase
+    {
+        public MarkAsFinalTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "mark_as_final";
+
+        public override string Description => "把文档标记为最终状态（或取消标记），提示读者内容已定稿。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["final"] = Bool("true 标记为最终（默认），false 取消标记"),
+        });
+
+        public override JObject Execute(JObject arguments)
+        {
+            var final = ToolArgumentValidator.OptionalBool(arguments, "final") ?? true;
+            Logger.Debug($"执行 mark_as_final，final={final}");
+            return JObject.FromObject(Service.MarkAsFinal(final));
         }
     }
 }

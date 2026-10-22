@@ -137,6 +137,7 @@ namespace WordMcpServer.Services
         [JsonProperty("alignment")] public string Alignment { get; set; }
         [JsonProperty("table_count")] public int TableCount { get; set; }
         [JsonProperty("column_widths")] public List<double> ColumnWidths { get; set; }
+        [JsonProperty("message")] public string Message { get; set; }
     }
 
     /// <summary>表格数据（二维数组）。</summary>
@@ -196,16 +197,6 @@ namespace WordMcpServer.Services
         [JsonProperty("hyperlink_count")] public int HyperlinkCount { get; set; }
     }
 
-    /// <summary>图片信息。</summary>
-    public sealed class ImageInfo
-    {
-        [JsonProperty("path")] public string Path { get; set; }
-        [JsonProperty("width")] public double Width { get; set; }
-        [JsonProperty("height")] public double Height { get; set; }
-        [JsonProperty("paragraph_index")] public int ParagraphIndex { get; set; }
-        [JsonProperty("inline_shape_count")] public int InlineShapeCount { get; set; }
-    }
-
     /// <summary>目录信息。</summary>
     public sealed class TocInfo
     {
@@ -219,8 +210,12 @@ namespace WordMcpServer.Services
     public sealed class HeaderFooterInfo
     {
         [JsonProperty("section_index")] public int SectionIndex { get; set; }
+        [JsonProperty("header_type")] public string HeaderType { get; set; }
         [JsonProperty("header_text")] public string HeaderText { get; set; }
         [JsonProperty("footer_text")] public string FooterText { get; set; }
+        [JsonProperty("link_to_previous")] public bool? LinkToPrevious { get; set; }
+        [JsonProperty("different_first_page")] public bool DifferentFirstPage { get; set; }
+        [JsonProperty("odd_even_pages")] public bool OddEvenPages { get; set; }
         [JsonProperty("section_count")] public int SectionCount { get; set; }
     }
 
@@ -232,6 +227,8 @@ namespace WordMcpServer.Services
         [JsonProperty("initial")] public string Initial { get; set; }
         [JsonProperty("text")] public string Text { get; set; }
         [JsonProperty("scope_text")] public string ScopeText { get; set; }
+        [JsonProperty("done")] public bool Done { get; set; }
+        [JsonProperty("reply_count")] public int ReplyCount { get; set; }
     }
 
     /// <summary>页面设置信息。</summary>
@@ -413,6 +410,15 @@ namespace WordMcpServer.Services
         public bool MatchCase { get; set; }
         public bool MatchWholeWord { get; set; }
 
+        /// <summary>使用 Word 通配符匹配（* ? [] 等）。</summary>
+        public bool MatchWildcards { get; set; }
+
+        /// <summary>document / selection / headers-footers（默认 document）。</summary>
+        public string Scope { get; set; } = "document";
+
+        /// <summary>只替换第 N 处（1 基）；为空时按 replace_all 语义。</summary>
+        public int? Occurrence { get; set; }
+
         /// <summary>true 替换全部（默认），false 只替换第一处。</summary>
         public bool ReplaceAll { get; set; } = true;
     }
@@ -423,6 +429,11 @@ namespace WordMcpServer.Services
         public string Text { get; set; }
         public bool MatchCase { get; set; }
         public bool MatchWholeWord { get; set; }
+        public bool MatchWildcards { get; set; }
+
+        /// <summary>document / selection / headers-footers（默认 document）。</summary>
+        public string Scope { get; set; } = "document";
+
         public int MaxResults { get; set; } = 20;
     }
 
@@ -439,6 +450,24 @@ namespace WordMcpServer.Services
 
         /// <summary>图片所在段落的对齐：left / center / right。</summary>
         public string Alignment { get; set; }
+
+        /// <summary>inline（默认，内嵌）/ floating（浮动）。</summary>
+        public string Layout { get; set; } = "inline";
+
+        /// <summary>浮动环绕方式：square / tight / through / none / top-bottom / behind / front。</summary>
+        public string Wrap { get; set; }
+
+        /// <summary>浮动图片左边距（磅）。</summary>
+        public double? Left { get; set; }
+
+        /// <summary>浮动图片上边距（磅）。</summary>
+        public double? Top { get; set; }
+
+        /// <summary>浮动定位基准：page / margin / column / paragraph（默认 page）。</summary>
+        public string RelativeTo { get; set; } = "page";
+
+        /// <summary>替代文字（无障碍/图注）。</summary>
+        public string AltText { get; set; }
 
         /// <summary>插入到该段落之前（1 基）；为空表示追加到文档末尾。</summary>
         public int? ParagraphIndex { get; set; }
@@ -475,11 +504,23 @@ namespace WordMcpServer.Services
         /// <summary>节索引（1 基，默认 1）。</summary>
         public int SectionIndex { get; set; } = 1;
 
+        /// <summary>页眉页脚类型：primary（默认）/ first-page / even-pages。</summary>
+        public string HeaderType { get; set; } = "primary";
+
         public string HeaderText { get; set; }
         public string FooterText { get; set; }
 
         /// <summary>是否在页脚附加页码域（默认 false）。</summary>
         public bool IncludePageNumber { get; set; }
+
+        /// <summary>是否链接到前一节（可选）。</summary>
+        public bool? LinkToPrevious { get; set; }
+
+        /// <summary>首页页眉页脚不同（可选）。</summary>
+        public bool? DifferentFirstPage { get; set; }
+
+        /// <summary>奇偶页页眉页脚不同（可选）。</summary>
+        public bool? OddEvenPages { get; set; }
     }
 
     /// <summary>set_page_setup 请求。</summary>
@@ -869,6 +910,180 @@ namespace WordMcpServer.Services
         public string ScreenTip { get; set; }
     }
 
+    // ============================== P0 增强 DTO（选区 / 图片 / 页眉页脚 / 修订 / 批注 / 表格 / 保护 / 封面 / 导出） ==============================
+
+    /// <summary>当前选区信息。</summary>
+    public sealed class SelectionInfo
+    {
+        [JsonProperty("selection_type")] public string SelectionType { get; set; }
+        [JsonProperty("start")] public int Start { get; set; }
+        [JsonProperty("end")] public int End { get; set; }
+        [JsonProperty("text")] public string Text { get; set; }
+        [JsonProperty("paragraph_index")] public int ParagraphIndex { get; set; }
+        [JsonProperty("page_number")] public int PageNumber { get; set; }
+        [JsonProperty("is_empty")] public bool IsEmpty { get; set; }
+    }
+
+    /// <summary>copy_range 请求。</summary>
+    public sealed class CopyRangeRequest
+    {
+        public int? SourceStartParagraph { get; set; }
+        public int? SourceEndParagraph { get; set; }
+        public string FindText { get; set; }
+
+        /// <summary>插入到该段落之前；缺省追加到文档末尾。</summary>
+        public int? TargetParagraph { get; set; }
+    }
+
+    /// <summary>图片条目（内嵌或浮动）。</summary>
+    public sealed class ImageEntry
+    {
+        [JsonProperty("kind")] public string Kind { get; set; }
+        [JsonProperty("index")] public int Index { get; set; }
+        [JsonProperty("name")] public string Name { get; set; }
+        [JsonProperty("width")] public double Width { get; set; }
+        [JsonProperty("height")] public double Height { get; set; }
+        [JsonProperty("left")] public double? Left { get; set; }
+        [JsonProperty("top")] public double? Top { get; set; }
+        [JsonProperty("wrap")] public string Wrap { get; set; }
+        [JsonProperty("alt_text")] public string AltText { get; set; }
+        [JsonProperty("paragraph_index")] public int ParagraphIndex { get; set; }
+    }
+
+    /// <summary>update_image 请求。</summary>
+    public sealed class UpdateImageRequest
+    {
+        /// <summary>inline / floating（默认 inline）。</summary>
+        public string Kind { get; set; } = "inline";
+
+        /// <summary>内嵌图片索引（1 基）。</summary>
+        public int? Index { get; set; }
+
+        /// <summary>浮动图片名称（与 index 二选一）。</summary>
+        public string Name { get; set; }
+
+        public double? Width { get; set; }
+        public double? Height { get; set; }
+        public double? ScaleWidthPercent { get; set; }
+        public double? ScaleHeightPercent { get; set; }
+        public double? CropTop { get; set; }
+        public double? CropBottom { get; set; }
+        public double? CropLeft { get; set; }
+        public double? CropRight { get; set; }
+        public string AltText { get; set; }
+        public string Title { get; set; }
+    }
+
+    /// <summary>页码设置。</summary>
+    public sealed class PageNumbersInfo
+    {
+        [JsonProperty("section_index")] public int SectionIndex { get; set; }
+        [JsonProperty("number_style")] public string NumberStyle { get; set; }
+        [JsonProperty("starting_number")] public int StartingNumber { get; set; }
+        [JsonProperty("restart_at_section")] public bool RestartAtSection { get; set; }
+    }
+
+    /// <summary>set_page_numbers 请求。</summary>
+    public sealed class SetPageNumbersRequest
+    {
+        public int SectionIndex { get; set; } = 1;
+        public string NumberStyle { get; set; }
+        public int? StartingNumber { get; set; }
+        public bool? RestartAtSection { get; set; }
+    }
+
+    /// <summary>修订信息。</summary>
+    public sealed class RevisionInfo
+    {
+        [JsonProperty("index")] public int Index { get; set; }
+        [JsonProperty("type")] public string Type { get; set; }
+        [JsonProperty("author")] public string Author { get; set; }
+        [JsonProperty("date")] public string Date { get; set; }
+        [JsonProperty("text")] public string Text { get; set; }
+        [JsonProperty("paragraph_index")] public int ParagraphIndex { get; set; }
+    }
+
+    /// <summary>表格边框请求。</summary>
+    public sealed class SetTableBordersRequest
+    {
+        public int TableIndex { get; set; }
+        public string Style { get; set; }
+        public string Width { get; set; }
+        public int? ColorArgb { get; set; }
+        public bool? Inside { get; set; } = true;
+        public bool? Outside { get; set; } = true;
+    }
+
+    /// <summary>单元格内边距请求。</summary>
+    public sealed class CellPaddingRequest
+    {
+        public int TableIndex { get; set; }
+        public int? Row { get; set; }
+        public int? Column { get; set; }
+        public double? Top { get; set; }
+        public double? Bottom { get; set; }
+        public double? Left { get; set; }
+        public double? Right { get; set; }
+    }
+
+    /// <summary>表格排序请求。</summary>
+    public sealed class SortTableRequest
+    {
+        public int TableIndex { get; set; }
+        public int KeyColumn { get; set; } = 1;
+        public bool Ascending { get; set; } = true;
+        public bool HasHeader { get; set; } = true;
+
+        /// <summary>alphanumeric / numeric / date（默认 alphanumeric）。</summary>
+        public string FieldType { get; set; }
+    }
+
+    /// <summary>文档保护信息。</summary>
+    public sealed class ProtectionInfo
+    {
+        [JsonProperty("protection_type")] public string ProtectionType { get; set; }
+        [JsonProperty("protected")] public bool Protected { get; set; }
+        [JsonProperty("is_final")] public bool IsFinal { get; set; }
+    }
+
+    /// <summary>封面页请求（生成式封面）。</summary>
+    public sealed class CoverPageRequest
+    {
+        public string Title { get; set; }
+        public string Subtitle { get; set; }
+        public string Author { get; set; }
+        public string Institution { get; set; }
+        public string Date { get; set; }
+        public bool PageBreak { get; set; } = true;
+    }
+
+    /// <summary>封面页结果。</summary>
+    public sealed class CoverPageResult
+    {
+        [JsonProperty("title")] public string Title { get; set; }
+        [JsonProperty("cover_paragraphs")] public int CoverParagraphs { get; set; }
+        [JsonProperty("paragraph_count")] public int ParagraphCount { get; set; }
+    }
+
+    /// <summary>export_to_pdf 请求。</summary>
+    public sealed class ExportPdfRequest
+    {
+        public string OutputPath { get; set; }
+        public bool OpenAfterExport { get; set; }
+
+        /// <summary>all / selection / current-page / from-to（默认 all）。</summary>
+        public string Range { get; set; } = "all";
+
+        public int? FromPage { get; set; }
+        public int? ToPage { get; set; }
+
+        /// <summary>PDF/A 归档格式。</summary>
+        public bool PdfA { get; set; }
+
+        /// <summary>是否为标题创建书签（默认 true）。</summary>
+        public bool CreateBookmarks { get; set; } = true;
+    }
+
     // ============================== 服务契约 ==============================
     /// <summary>
     /// Word 对象模型服务。所有方法内部通过 OfficeThreadMarshaller 封送到 Word 主线程执行，
@@ -886,7 +1101,7 @@ namespace WordMcpServer.Services
         DocumentInfo CloseDocument(string name, int? index, bool saveChanges);
         DocumentInfo SaveDocument(string saveAsPath, string format);
         BackupResult BackupDocument(string backupPath);
-        ExportResult ExportToPdf(string outputPath, bool openAfterExport);
+        ExportResult ExportToPdf(ExportPdfRequest request);
         DocumentText GetDocumentText(int maxChars);
         DocumentOutline GetDocumentOutline(int maxItems);
         DocumentStatistics GetDocumentStatistics();
@@ -914,17 +1129,17 @@ namespace WordMcpServer.Services
         // ---- 查找与链接 ----
         FindReplaceResult FindReplaceText(FindReplaceRequest request);
         FindResult FindText(FindTextRequest request);
-        BookmarkInfo InsertBookmark(string name, string text);
+        BookmarkInfo InsertBookmark(string name, string text, string findText, int? paragraphIndex, int? occurrence);
         BookmarkInfo GetBookmarkText(string name);
         void DeleteBookmark(string name);
         HyperlinkInfo InsertHyperlink(InsertHyperlinkRequest request);
 
         // ---- 插入与批注 ----
-        ImageInfo InsertImage(InsertImageRequest request);
+        ImageEntry InsertImage(InsertImageRequest request);
         TocInfo InsertToc(InsertTocRequest request);
         TocInfo UpdateToc();
         HeaderFooterInfo SetHeaderFooter(SetHeaderFooterRequest request);
-        HeaderFooterInfo GetHeaderFooter(int sectionIndex);
+        HeaderFooterInfo GetHeaderFooter(int sectionIndex, string headerType);
         CommentInfo InsertComment(string text, string anchorText, int? paragraphIndex);
         List<CommentInfo> ListComments();
         void DeleteComment(int index);
@@ -983,5 +1198,31 @@ namespace WordMcpServer.Services
         CrossReferenceResult InsertCrossReference(CrossReferenceRequest request);
         CaptionResult InsertCaption(InsertCaptionRequest request);
         FieldInfoResult InsertField(InsertFieldRequest request);
+
+        // ---- P0 增强：选区 / 段落移动 / 图片 / 页眉页脚 / 修订 / 批注 / 表格 / 保护 / 封面 ----
+        SelectionInfo GetSelection();
+        ParagraphInfo ReplaceSelection(string text, string style);
+        SelectionInfo GotoPage(int page);
+        ParagraphInfo MoveParagraph(int paragraphIndex, int offset);
+        ParagraphInfo CopyRange(CopyRangeRequest request);
+        List<ImageEntry> ListImages();
+        ImageEntry UpdateImage(UpdateImageRequest request);
+        void DeleteImage(string kind, int? index, string name);
+        PageNumbersInfo SetPageNumbers(SetPageNumbersRequest request);
+        List<RevisionInfo> ListRevisions();
+        RevisionResult AcceptRevision(int index);
+        RevisionResult RejectRevision(int index);
+        CommentInfo GetComment(int index);
+        CommentInfo ReplyComment(int parentIndex, string text);
+        CommentInfo ResolveComment(int index, bool done);
+        TableInfo SetTableBorders(SetTableBordersRequest request);
+        TableInfo SetCellPadding(CellPaddingRequest request);
+        TableInfo SortTable(SortTableRequest request);
+        TableInfo ConvertTableToText(int tableIndex, string separator);
+        TableInfo ConvertTextToTable(int startParagraph, int endParagraph, int columns, string separator);
+        ProtectionInfo ProtectDocument(string protectionType, string password);
+        ProtectionInfo UnprotectDocument(string password);
+        ProtectionInfo MarkAsFinal(bool final);
+        CoverPageResult InsertCoverPage(CoverPageRequest request);
     }
 }

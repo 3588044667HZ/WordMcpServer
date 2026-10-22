@@ -1,14 +1,14 @@
 # WordMcpServer — Word MCP 服务器（VSTO 插件）
 
 一个 Word VSTO 插件。插件随 Word 启动时自动在 `127.0.0.1:5101` 运行本地 HTTP 服务器，
-通过 MCP（Model Context Protocol）的 Streamable HTTP 传输暴露 81 个操作 Word 的工具。
+通过 MCP（Model Context Protocol）的 Streamable HTTP 传输暴露 105 个操作 Word 的工具。
 AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控当前打开的文档，
 所有修改立即在 Word 界面中可见。
 
 > 本项目与 `PptMcpServer`（PowerPoint 版，端口 5100）架构一致、端口错开，可同时运行。
 > 开发经验见 `DEVELOPMENT_GUIDE.md`。
 
-## 功能一览（81 个工具）
+## 功能一览（105 个工具）
 
 ### 文档（18）
 
@@ -20,9 +20,9 @@ AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控
 | `open_document` | 按路径打开文档（可只读） |
 | `activate_document` | 按名称/索引切换活动文档 |
 | `close_document` | 关闭文档（可选保存修改） |
-| `save_document` | 保存 / 另存为（docx / doc / rtf / txt / odt） |
+| `save_document` | 保存 / 另存为（docx / docm / doc / rtf / txt / odt / html / mhtml / xml） |
 | `backup_document` | 备份：已保存文档直接复制文件，未保存文档另存到备份路径 |
-| `export_to_pdf` | 导出 PDF（ExportAsFixedFormat） |
+| `export_to_pdf` | 导出 PDF（整篇 / 选区 / 当前页 / 页范围，可加书签与 PDF/A） |
 | `get_document_text` | 读取全文纯文本（可限制最大字符数） |
 | `get_document_outline` | 读取标题大纲（段落索引、级别、文本、样式） |
 | `get_document_statistics` | 页数 / 字数 / 字符数 / 段落数 / 行数 |
@@ -69,9 +69,9 @@ AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控
 
 | 工具 | 说明 |
 | --- | --- |
-| `find_replace_text` | 全文查找替换（大小写 / 全字匹配，可只替换第一处） |
-| `find_text` | 查找所有出现位置（段落索引与字符位置） |
-| `insert_bookmark` / `get_bookmark_text` / `delete_bookmark` | 插入 / 读取 / 删除书签 |
+| `find_replace_text` | 查找替换（大小写 / 全字 / 通配符，可限定范围与第 N 处） |
+| `find_text` | 查找出现位置（支持通配符、范围与第 N 处，返回段落索引与字符位置） |
+| `insert_bookmark` / `get_bookmark_text` / `delete_bookmark` | 插入（可按文本/段落定位）/ 读取 / 删除书签 |
 | `insert_hyperlink` | 插入超链接（外部 URL 或内部书签锚点） |
 | `list_hyperlinks` | 列出全部超链接（地址、内部锚点、所在段落） |
 | `update_hyperlink` | 修改链接显示文本 / 地址 / 锚点 / 悬停提示 |
@@ -81,9 +81,9 @@ AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控
 
 | 工具 | 说明 |
 | --- | --- |
-| `insert_image` | 插入内嵌图片（宽高可等比缩放、对齐） |
+| `insert_image` | 插入内嵌或浮动图片（宽高、等比缩放、对齐、环绕方式、alt 文本） |
 | `insert_toc` / `update_toc` | 插入 / 更新自动目录 |
-| `set_header_footer` / `get_header_footer` | 设置 / 读取页眉页脚（可附加页码域） |
+| `set_header_footer` / `get_header_footer` | 设置 / 读取页眉页脚（首页/奇偶页、可附加页码域） |
 | `insert_comment` / `list_comments` / `delete_comment` | 插入 / 列出 / 删除批注 |
 | `insert_footnote` | 插入脚注（真角标；可在指定文本后插入） |
 | `add_watermark` / `remove_watermark` | 添加 / 删除文字水印（斜向或水平） |
@@ -108,6 +108,59 @@ AI 客户端（Claude Desktop / opencode 等）可以直接连接，实时操控
 | `modify_style` | 修改现有样式的字体与段落格式 |
 | `delete_style` | 删除自定义样式（内置样式受保护） |
 
+### 选区与内容移动（5）
+
+| 工具 | 说明 |
+| --- | --- |
+| `get_selection` | 读取当前选区（类型、文本、段落、页码；空选区文本为空） |
+| `replace_selection` | 用指定文本替换当前选区 |
+| `goto_page` | 跳转到指定页并返回选区信息 |
+| `move_paragraph` | 向上/向下移动段落（交换相邻段落，保留格式） |
+| `copy_range` | 复制段落区间或匹配文本，插入到目标段落前或文末 |
+
+### 图片管理（3）
+
+| 工具 | 说明 |
+| --- | --- |
+| `list_images` | 列出内嵌/浮动图片（尺寸、位置、环绕方式、alt、所在段落） |
+| `update_image` | 更新图片宽高、缩放、裁剪、alt 与标题（内嵌按索引，浮动按名称） |
+| `delete_image` | 删除指定内嵌或浮动图片 |
+
+### 页码与封面（2）
+
+| 工具 | 说明 |
+| --- | --- |
+| `set_page_numbers` | 设置页码样式、起始编号与是否在节处重新编号 |
+| `insert_cover_page` | 在文档开头插入封面（标题/副标题/作者/单位/日期，可自动分页） |
+
+### 修订与批注增强（6）
+
+| 工具 | 说明 |
+| --- | --- |
+| `list_revisions` | 列出修订记录（类型、作者、时间、文本） |
+| `accept_revision` / `reject_revision` | 接受 / 拒绝单条修订 |
+| `get_comment` | 读取单条批注（含回复与解决状态） |
+| `reply_comment` | 回复指定批注 |
+| `resolve_comment` | 标记批注为已解决 / 取消解决 |
+
+### 表格增强（5）
+
+| 工具 | 说明 |
+| --- | --- |
+| `set_table_borders` | 设置表格边框样式、线宽与颜色 |
+| `set_cell_padding` | 设置单元格内边距 |
+| `sort_table` | 按列排序（升/降序，文本/数字/日期，支持表头） |
+| `convert_table_to_text` | 表格转文本（可指定分隔符） |
+| `convert_text_to_table` | 文本转表格（按段落范围、列数与分隔符） |
+
+### 文档保护（3）
+
+| 工具 | 说明 |
+| --- | --- |
+| `protect_document` | 保护文档（只读 / 仅批注 / 仅表单 / 仅修订，可设密码） |
+| `unprotect_document` | 取消文档保护（可提供密码） |
+| `mark_as_final` | 标记 / 取消最终状态（未保存文档需先保存） |
+
 ## 目录结构
 
 ```
@@ -129,10 +182,10 @@ WordMcpServer/
 │   ├── Threading/               # Word 主线程封送器（核心！见下文）
 │   ├── Protocol/                # MCP JSON-RPC 处理（initialize/tools/list/tools/call）
 │   ├── Server/                  # Kestrel 自托管 + /mcp 中间件（含 SSE）
-│   └── Tools/                   # 81 个工具：Schema 声明 + 参数校验 + 执行
+│   └── Tools/                   # 105 个工具：Schema 声明 + 参数校验 + 执行
 └── Services/                    # Word 对象模型服务层（IWordService / WordService）
 tests/
-└── run_tests.ps1                # 端到端回归测试（214 项断言）
+└── run_tests.ps1                # 端到端回归测试（285 项断言）
 tools/
 └── nuget.exe                    # packages.config 还原工具
 ```
@@ -175,7 +228,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 # 构建 + 注册 + 启动 Word + 等待 MCP 就绪
 powershell -ExecutionPolicy Bypass -File build.ps1 -StopWord -Register -StartWord
 
-# 开发闭环：构建 → 注册 → 启动 → 跑完整回归测试（214 项）
+# 开发闭环：构建 → 注册 → 启动 → 跑完整回归测试（285 项）
 powershell -ExecutionPolicy Bypass -File build.ps1 -StopWord -Register -StartWord -Test
 
 # Release 构建（先清理）
@@ -190,7 +243,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Configuration Release -Clean
 | `-Register` | 注册/启用插件并清除 Word 禁用记录 |
 | `-StopWord` | 构建前强制结束 WINWORD.EXE（**未保存文档会丢失**） |
 | `-StartWord` | 构建后启动 Word 并等待 `/health` 就绪 |
-| `-Test` | 启动后运行 `tests\run_tests.ps1`（214 项断言） |
+| `-Test` | 启动后运行 `tests\run_tests.ps1`（285 项断言） |
 
 ### 注册插件（命令行构建后）
 
@@ -300,10 +353,12 @@ curl -X POST http://127.0.0.1:5101/mcp -H "Content-Type: application/json" -d "{
 powershell -ExecutionPolicy Bypass -File tests\run_tests.ps1
 ```
 
-覆盖：协议握手、工具清单、文档读写、段落格式、富文本、列表、段落底纹、表格增删改合并、
-查找替换、书签、超链接（含内部锚点）、图片、目录、页眉页脚、批注、脚注/尾注、
-题注与交叉引用、水印、修订、样式管理、文档属性、域更新、页面设置、分页分节、
-光标输入、撤销、保存/备份/导出 PDF/打开/关闭，以及 5 类错误路径（共 214 项断言）。
+覆盖：协议握手、工具清单、文档读写、段落与格式、富文本、列表、段落底纹、
+表格增删改合并（含边框/内边距/排序/表格文本互转）、查找替换、书签、超链接（含内部锚点）、
+图片（内嵌/浮动/更新/删除）、目录、页眉页脚（含首页）、批注（含回复/解决）、脚注/尾注、
+题注与交叉引用、水印、修订（含单条接受/拒绝）、样式管理、文档属性、域更新、页面设置、
+分页分节、选区读取/替换/跳页、段落移动与区间复制、页码、文档保护/最终状态、封面、
+保存/备份/导出 PDF（含页范围）/打开/关闭，以及错误路径（共 285 项断言）。
 
 ## 架构与线程模型（必读）
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -238,16 +238,17 @@ namespace WordMcpServer.Services
             });
         }
 
-        public ExportResult ExportToPdf(string outputPath, bool openAfterExport)
+        public ExportResult ExportToPdf(ExportPdfRequest request)
         {
             return Mutate("导出 PDF", () =>
             {
                 var doc = GetActiveDocumentOrThrow();
-                if (string.IsNullOrWhiteSpace(outputPath))
+                if (request == null || string.IsNullOrWhiteSpace(request.OutputPath))
                 {
                     throw new McpToolException(McpErrorCodes.InvalidParams, "缺少必填参数：output_path");
                 }
 
+                var outputPath = request.OutputPath;
                 if (!outputPath.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
                 {
                     throw new McpToolException(McpErrorCodes.InvalidParams, "output_path 必须以 .pdf 结尾");
@@ -260,11 +261,51 @@ namespace WordMcpServer.Services
                     throw new McpToolException(McpErrorCodes.FileNotFound, $"目录不存在：{dir}");
                 }
 
+                var range = (request.Range ?? "all").Trim().ToLowerInvariant();
+                WdExportRange exportRange;
+                var fromPage = 0;
+                var toPage = 0;
+                switch (range)
+                {
+                    case "all":
+                        exportRange = WdExportRange.wdExportAllDocument;
+                        break;
+                    case "selection":
+                        exportRange = WdExportRange.wdExportSelection;
+                        break;
+                    case "current-page":
+                        exportRange = WdExportRange.wdExportCurrentPage;
+                        break;
+                    case "from-to":
+                        if (!request.FromPage.HasValue || !request.ToPage.HasValue)
+                        {
+                            throw new McpToolException(McpErrorCodes.InvalidParams,
+                                "range=from-to 时必须提供 from_page 和 to_page");
+                        }
+
+                        if (request.FromPage.Value < 1 || request.ToPage.Value < request.FromPage.Value)
+                        {
+                            throw new McpToolException(McpErrorCodes.InvalidParams,
+                                "from_page 必须 >= 1，且 to_page >= from_page");
+                        }
+
+                        exportRange = WdExportRange.wdExportFromTo;
+                        fromPage = request.FromPage.Value;
+                        toPage = request.ToPage.Value;
+                        break;
+                    default:
+                        throw new McpToolException(McpErrorCodes.UnsupportedType,
+                            $"不支持的导出范围：{request.Range}（支持 all / selection / current-page / from-to）");
+                }
+
                 object missing = Type.Missing;
-                doc.ExportAsFixedFormat(outputPath, WdExportFormat.wdExportFormatPDF, openAfterExport,
-                    WdExportOptimizeFor.wdExportOptimizeForPrint, WdExportRange.wdExportAllDocument,
-                    0, 0, WdExportItem.wdExportDocumentContent, false, true,
-                    WdExportCreateBookmarks.wdExportCreateHeadingBookmarks, true, false, false, ref missing);
+                doc.ExportAsFixedFormat(outputPath, WdExportFormat.wdExportFormatPDF, request.OpenAfterExport,
+                    WdExportOptimizeFor.wdExportOptimizeForPrint, exportRange, fromPage, toPage,
+                    WdExportItem.wdExportDocumentContent, false, true,
+                    request.CreateBookmarks
+                        ? WdExportCreateBookmarks.wdExportCreateHeadingBookmarks
+                        : WdExportCreateBookmarks.wdExportCreateNoBookmarks,
+                    true, false, request.PdfA, ref missing);
 
                 var fi = new FileInfo(outputPath);
                 return new ExportResult
@@ -886,36 +927,21 @@ namespace WordMcpServer.Services
                     throw new McpToolException(McpErrorCodes.InvalidParams, "缺少必填参数：find_text");
                 }
 
-                var range = doc.Content;
-                var find = range.Find;
-                find.ClearFormatting();
-                find.Replacement.ClearFormatting();
-                find.Text = request.FindText;
-                find.Replacement.Text = NormalizeText(request.ReplaceText) ?? string.Empty;
-                find.MatchCase = request.MatchCase;
-                find.MatchWholeWord = request.MatchWholeWord;
-                find.Forward = true;
-                find.Wrap = WdFindWrap.wdFindStop;
-
-                object missing = Type.Missing;
-                object findTextObj = request.FindText;
-                object replaceOne = WdReplace.wdReplaceOne;
-                var count = 0;
-                if (request.ReplaceAll)
+                if (request.Occurrence.HasValue && request.Occurrence.Value < 1)
                 {
-                    while (count < 10000 && find.Execute(ref findTextObj, ref missing, ref missing,
-                        ref missing, ref missing, ref missing, ref missing, ref missing, ref missing,
-                        ref missing, ref replaceOne, ref missing, ref missing, ref missing, ref missing))
-                    {
-                        count++;
-                        range.Collapse(WdCollapseDirection.wdCollapseEnd);
-                    }
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "occurrence 必须 >= 1");
                 }
-                else if (find.Execute(ref findTextObj, ref missing, ref missing, ref missing, ref missing,
-                    ref missing, ref missing, ref missing, ref missing, ref missing, ref replaceOne,
-                    ref missing, ref missing, ref missing, ref missing))
+
+                var ranges = ResolveFindRanges(doc, request.Scope);
+                var occurrenceCounter = 0;
+                var count = 0;
+                foreach (var range in ranges)
                 {
-                    count = 1;
+                    count += ReplaceInRange(range, request, ref occurrenceCounter);
+                    if (request.Occurrence.HasValue && occurrenceCounter >= request.Occurrence.Value)
+                    {
+                        break;
+                    }
                 }
 
                 return new FindReplaceResult
@@ -940,30 +966,42 @@ namespace WordMcpServer.Services
 
                 var maxResults = request.MaxResults < 1 ? 20 : Math.Min(request.MaxResults, 200);
                 var result = new FindResult { FindText = request.Text };
-                var range = doc.Content;
-                var find = range.Find;
-                find.ClearFormatting();
-                find.Text = request.Text;
-                find.MatchCase = request.MatchCase;
-                find.MatchWholeWord = request.MatchWholeWord;
-                find.Forward = true;
-                find.Wrap = WdFindWrap.wdFindStop;
+                var scope = (request.Scope ?? "document").Trim().ToLowerInvariant();
+                var ranges = ResolveFindRanges(doc, scope);
+                var trackParagraph = scope != "headers-footers";
 
-                object missing = Type.Missing;
-                object findTextObj = request.Text;
-                while (result.Matches.Count < maxResults &&
-                       find.Execute(ref findTextObj, ref missing, ref missing, ref missing, ref missing,
-                           ref missing, ref missing, ref missing, ref missing, ref missing, ref missing,
-                           ref missing, ref missing, ref missing, ref missing))
+                foreach (var range in ranges)
                 {
-                    result.Matches.Add(new FindMatch
+                    var find = range.Find;
+                    find.ClearFormatting();
+                    find.Text = request.Text;
+                    find.MatchCase = request.MatchCase;
+                    find.MatchWholeWord = request.MatchWholeWord;
+                    find.MatchWildcards = request.MatchWildcards;
+                    find.Forward = true;
+                    find.Wrap = WdFindWrap.wdFindStop;
+
+                    object missing = Type.Missing;
+                    object findTextObj = request.Text;
+                    while (result.Matches.Count < maxResults &&
+                           find.Execute(ref findTextObj, ref missing, ref missing, ref missing, ref missing,
+                               ref missing, ref missing, ref missing, ref missing, ref missing, ref missing,
+                               ref missing, ref missing, ref missing, ref missing))
                     {
-                        ParagraphIndex = GetParagraphIndexAt(doc, range.Start),
-                        Text = SafeRead(() => range.Text),
-                        Start = range.Start,
-                        End = range.End,
-                    });
-                    range.Collapse(WdCollapseDirection.wdCollapseEnd);
+                        result.Matches.Add(new FindMatch
+                        {
+                            ParagraphIndex = trackParagraph ? GetParagraphIndexAt(doc, range.Start) : 0,
+                            Text = SafeRead(() => range.Text),
+                            Start = range.Start,
+                            End = range.End,
+                        });
+                        range.Collapse(WdCollapseDirection.wdCollapseEnd);
+                    }
+
+                    if (result.Matches.Count >= maxResults)
+                    {
+                        break;
+                    }
                 }
 
                 result.MatchCount = result.Matches.Count;
@@ -971,7 +1009,7 @@ namespace WordMcpServer.Services
             });
         }
 
-        public BookmarkInfo InsertBookmark(string name, string text)
+        public BookmarkInfo InsertBookmark(string name, string text, string findText, int? paragraphIndex, int? occurrence)
         {
             return Mutate("插入书签", () =>
             {
@@ -986,17 +1024,43 @@ namespace WordMcpServer.Services
                     throw new McpToolException(McpErrorCodes.InvalidParams, $"书签已存在：{name}");
                 }
 
-                var index = AddParagraphCore(doc, text, null);
-                var p = doc.Paragraphs[index];
-                object rangeObj = p.Range;
+                Range range;
+                if (!string.IsNullOrEmpty(findText))
+                {
+                    range = FindNthRange(doc, findText, occurrence ?? 1);
+                    if (range == null)
+                    {
+                        throw new McpToolException(McpErrorCodes.TextNotFound,
+                            $"未找到要加书签的文本：{findText}");
+                    }
+                }
+                else if (paragraphIndex.HasValue)
+                {
+                    range = GetParagraphOrThrow(doc, paragraphIndex.Value).Range;
+                    if (range.End > range.Start)
+                    {
+                        range.End = range.End - 1;
+                    }
+                }
+                else
+                {
+                    var index = AddParagraphCore(doc, text, null);
+                    range = doc.Paragraphs[index].Range;
+                    if (range.End > range.Start)
+                    {
+                        range.End = range.End - 1;
+                    }
+                }
+
+                object rangeObj = range;
                 doc.Bookmarks.Add(name, ref rangeObj);
                 return new BookmarkInfo
                 {
                     Name = name,
                     Exists = true,
-                    Text = TrimParagraphText(SafeRead(() => p.Range.Text)),
-                    Start = SafeRead(() => p.Range.Start),
-                    End = SafeRead(() => p.Range.End),
+                    Text = TrimParagraphText(SafeRead(() => range.Text)),
+                    Start = SafeRead(() => range.Start),
+                    End = SafeRead(() => range.End),
                 };
             });
         }
@@ -1101,7 +1165,7 @@ namespace WordMcpServer.Services
 
         // ============================== 插入与批注 ==============================
 
-        public ImageInfo InsertImage(InsertImageRequest request)
+        public ImageEntry InsertImage(InsertImageRequest request)
         {
             return Mutate("插入图片", () =>
             {
@@ -1117,63 +1181,114 @@ namespace WordMcpServer.Services
                     throw new McpToolException(McpErrorCodes.FileNotFound, $"图片文件不存在：{path}");
                 }
 
+                var layout = (request.Layout ?? "inline").Trim().ToLowerInvariant();
+                if (layout != "inline" && layout != "floating")
+                {
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的图片布局：{request.Layout}（支持 inline / floating）");
+                }
+
                 Range anchor;
                 int index;
                 if (request.ParagraphIndex.HasValue)
                 {
-                    var p = GetParagraphOrThrow(doc, request.ParagraphIndex.Value);
                     index = request.ParagraphIndex.Value;
-                    anchor = p.Range;
-                    anchor.Collapse(WdCollapseDirection.wdCollapseStart);
+                    anchor = GetParagraphOrThrow(doc, index).Range;
                 }
                 else
                 {
                     index = AddParagraphCore(doc, null, null);
                     anchor = doc.Paragraphs[index].Range;
-                    anchor.Collapse(WdCollapseDirection.wdCollapseStart);
                 }
 
-                object linkToFile = false;
-                object saveWithDocument = true;
-                object rangeObj = anchor;
-                var shape = doc.InlineShapes.AddPicture(path, ref linkToFile, ref saveWithDocument, ref rangeObj);
+                if (layout == "inline")
+                {
+                    var inlineAnchor = anchor;
+                    inlineAnchor.Collapse(WdCollapseDirection.wdCollapseStart);
+                    object linkToFile = false;
+                    object saveWithDocument = true;
+                    object rangeObj = inlineAnchor;
+                    var shape = doc.InlineShapes.AddPicture(path, ref linkToFile, ref saveWithDocument, ref rangeObj);
+                    try
+                    {
+                        if (request.Width.HasValue && request.Height.HasValue)
+                        {
+                            shape.Width = (float)request.Width.Value;
+                            shape.Height = (float)request.Height.Value;
+                        }
+                        else if (request.Width.HasValue)
+                        {
+                            var ratio = request.Width.Value / shape.Width;
+                            shape.Width = (float)request.Width.Value;
+                            shape.Height = (float)(shape.Height * ratio);
+                        }
+                        else if (request.Height.HasValue)
+                        {
+                            var ratio = request.Height.Value / shape.Height;
+                            shape.Height = (float)request.Height.Value;
+                            shape.Width = (float)(shape.Width * ratio);
+                        }
+
+                        if (!string.IsNullOrEmpty(request.Alignment))
+                        {
+                            shape.Range.ParagraphFormat.Alignment = ParseAlignment(request.Alignment);
+                        }
+
+                        if (!string.IsNullOrEmpty(request.AltText))
+                        {
+                            shape.AlternativeText = request.AltText;
+                        }
+
+                        return DescribeInlineImage(doc, FindInlineShapeIndex(doc, shape));
+                    }
+                    finally
+                    {
+                        TryRelease(shape);
+                    }
+                }
+
+                // 浮动图片
+                object floatingLink = false;
+                object floatingSave = true;
+                object left = request.Left ?? 0;
+                object top = request.Top ?? 0;
+                object width = request.Width.HasValue ? (object)(float)request.Width.Value : Type.Missing;
+                object height = request.Height.HasValue ? (object)(float)request.Height.Value : Type.Missing;
+                object anchorObj = anchor;
+                var floating = doc.Shapes.AddPicture(path, ref floatingLink, ref floatingSave, ref left, ref top,
+                    ref width, ref height, ref anchorObj);
                 try
                 {
-                    if (request.Width.HasValue && request.Height.HasValue)
+                    if (!string.IsNullOrEmpty(request.Wrap))
                     {
-                        shape.Width = (float)request.Width.Value;
-                        shape.Height = (float)request.Height.Value;
-                    }
-                    else if (request.Width.HasValue)
-                    {
-                        var ratio = request.Width.Value / shape.Width;
-                        shape.Width = (float)request.Width.Value;
-                        shape.Height = (float)(shape.Height * ratio);
-                    }
-                    else if (request.Height.HasValue)
-                    {
-                        var ratio = request.Height.Value / shape.Height;
-                        shape.Height = (float)request.Height.Value;
-                        shape.Width = (float)(shape.Width * ratio);
+                        floating.WrapFormat.Type = ParseWrapType(request.Wrap);
                     }
 
-                    if (!string.IsNullOrEmpty(request.Alignment))
+                    floating.WrapFormat.AllowOverlap = -1;
+                    var relative = (request.RelativeTo ?? "page").Trim().ToLowerInvariant();
+                    floating.RelativeHorizontalPosition = ParseRelativeHorizontal(relative);
+                    floating.RelativeVerticalPosition = ParseRelativeVertical(relative);
+
+                    if (request.Width.HasValue)
                     {
-                        shape.Range.ParagraphFormat.Alignment = ParseAlignment(request.Alignment);
+                        floating.Width = (float)request.Width.Value;
                     }
 
-                    return new ImageInfo
+                    if (request.Height.HasValue)
                     {
-                        Path = path,
-                        Width = SafeRead(() => (double)shape.Width),
-                        Height = SafeRead(() => (double)shape.Height),
-                        ParagraphIndex = index,
-                        InlineShapeCount = doc.InlineShapes.Count,
-                    };
+                        floating.Height = (float)request.Height.Value;
+                    }
+
+                    if (!string.IsNullOrEmpty(request.AltText))
+                    {
+                        floating.AlternativeText = request.AltText;
+                    }
+
+                    return DescribeFloatingImage(doc, floating);
                 }
                 finally
                 {
-                    TryRelease(shape);
+                    TryRelease(floating);
                 }
             });
         }
@@ -1256,21 +1371,45 @@ namespace WordMcpServer.Services
                 var doc = GetActiveDocumentOrThrow();
                 var section = GetSectionOrThrow(doc, request.SectionIndex);
 
+                if (request.DifferentFirstPage.HasValue)
+                {
+                    section.PageSetup.DifferentFirstPageHeaderFooter = request.DifferentFirstPage.Value ? -1 : 0;
+                }
+
+                if (request.OddEvenPages.HasValue)
+                {
+                    section.PageSetup.OddAndEvenPagesHeaderFooter = request.OddEvenPages.Value ? -1 : 0;
+                }
+
+                var headerIndex = ParseHeaderFooterType(request.HeaderType);
+                var header = section.Headers[headerIndex];
+                var footer = section.Footers[headerIndex];
+
+                if (request.LinkToPrevious.HasValue)
+                {
+                    try
+                    {
+                        header.LinkToPrevious = request.LinkToPrevious.Value;
+                        footer.LinkToPrevious = request.LinkToPrevious.Value;
+                    }
+                    catch
+                    {
+                        // 首页/奇偶页未启用时设置链接可能失败，忽略
+                    }
+                }
+
                 if (request.HeaderText != null)
                 {
-                    var header = section.Headers[WdHeaderFooterIndex.wdHeaderFooterPrimary];
                     header.Range.Text = NormalizeText(request.HeaderText) ?? string.Empty;
                 }
 
                 if (request.FooterText != null)
                 {
-                    var footer = section.Footers[WdHeaderFooterIndex.wdHeaderFooterPrimary];
                     footer.Range.Text = NormalizeText(request.FooterText) ?? string.Empty;
                 }
 
                 if (request.IncludePageNumber)
                 {
-                    var footer = section.Footers[WdHeaderFooterIndex.wdHeaderFooterPrimary];
                     var range = footer.Range;
                     if (TrimParagraphText(SafeRead(() => range.Text)).Length > 0)
                     {
@@ -1288,17 +1427,17 @@ namespace WordMcpServer.Services
                     doc.Fields.Add(range, ref fieldType, ref fieldText, ref preserveFormatting);
                 }
 
-                return DescribeHeaderFooter(doc, request.SectionIndex);
+                return DescribeHeaderFooter(doc, request.SectionIndex, request.HeaderType);
             });
         }
 
-        public HeaderFooterInfo GetHeaderFooter(int sectionIndex)
+        public HeaderFooterInfo GetHeaderFooter(int sectionIndex, string headerType)
         {
             return Run("读取页眉页脚", () =>
             {
                 var doc = GetActiveDocumentOrThrow();
                 GetSectionOrThrow(doc, sectionIndex);
-                return DescribeHeaderFooter(doc, sectionIndex);
+                return DescribeHeaderFooter(doc, sectionIndex, headerType);
             });
         }
 
@@ -2812,6 +2951,866 @@ namespace WordMcpServer.Services
         }
 
 
+        // ============================== P0 增强：选区与内容移动 ==============================
+
+        public SelectionInfo GetSelection()
+        {
+            return Run("读取选区", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                return DescribeSelection(doc);
+            });
+        }
+
+        public ParagraphInfo ReplaceSelection(string text, string style)
+        {
+            return Mutate("替换选区", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var selection = _app.Selection;
+                selection.TypeText(NormalizeText(text) ?? string.Empty);
+                if (!string.IsNullOrEmpty(style))
+                {
+                    object styleObj = ResolveStyleValue(doc, style);
+                    var range = selection.Range;
+                    range.set_Style(ref styleObj);
+                }
+
+                var index = GetParagraphIndexAt(doc, selection.End);
+                if (index < 1 || index > doc.Paragraphs.Count)
+                {
+                    index = doc.Paragraphs.Count;
+                }
+
+                return DescribeParagraph(doc, index);
+            });
+        }
+
+        public SelectionInfo GotoPage(int page)
+        {
+            return Mutate("跳转到页", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                if (page < 1)
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "page 必须 >= 1");
+                }
+
+                object what = WdGoToItem.wdGoToPage;
+                object which = WdGoToDirection.wdGoToAbsolute;
+                object count = page;
+                object name = Type.Missing;
+                try
+                {
+                    _app.Selection.GoTo(ref what, ref which, ref count, ref name);
+                }
+                catch (Exception ex) when (!(ex is McpToolException))
+                {
+                    throw new McpToolException(McpErrorCodes.OperationFailed,
+                        $"跳转到第 {page} 页失败：{ex.Message}");
+                }
+
+                return DescribeSelection(doc);
+            });
+        }
+
+        public ParagraphInfo MoveParagraph(int paragraphIndex, int offset)
+        {
+            return Mutate("移动段落", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                if (offset == 0)
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "offset 不能为 0");
+                }
+
+                var count = doc.Paragraphs.Count;
+                var paragraph = GetParagraphOrThrow(doc, paragraphIndex);
+                if (SafeRead(() => (bool)paragraph.Range.Information[WdInformation.wdWithInTable]))
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "表格内的段落不支持移动");
+                }
+
+                var target = paragraphIndex + offset;
+                if (target < 1 || target > count)
+                {
+                    throw new McpToolException(McpErrorCodes.ParagraphOutOfRange,
+                        $"移动后的位置 {target} 超出范围（当前共 {count} 段）");
+                }
+
+                var source = doc.Paragraphs[paragraphIndex].Range;
+
+                // 插入位置（基于移动前的文档结构）
+                var appendAtEnd = offset > 0 && target >= count;
+                if (appendAtEnd)
+                {
+                    // 文末插入需保留段落标记与格式，单独处理
+                    AppendParagraphRange(doc, source);
+                }
+                else
+                {
+                    Range insertAt;
+                    if (offset < 0)
+                    {
+                        insertAt = doc.Paragraphs[target].Range;
+                        insertAt.Collapse(WdCollapseDirection.wdCollapseStart);
+                    }
+                    else
+                    {
+                        insertAt = doc.Paragraphs[target + 1].Range;
+                        insertAt.Collapse(WdCollapseDirection.wdCollapseStart);
+                    }
+
+                    var formatted = source.FormattedText;
+                    insertAt.FormattedText = formatted;
+                }
+
+                // 插入到源段落之前时，源段落索引后移 1
+                var deleteIndex = offset < 0 ? paragraphIndex + 1 : paragraphIndex;
+                doc.Paragraphs[deleteIndex].Range.Delete();
+
+                var finalIndex = offset < 0
+                    ? target
+                    : (appendAtEnd ? doc.Paragraphs.Count : target);
+                return DescribeParagraph(doc, finalIndex);
+            });
+        }
+
+        public ParagraphInfo CopyRange(CopyRangeRequest request)
+        {
+            return Mutate("复制内容", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+
+                Range source;
+                if (!string.IsNullOrEmpty(request.FindText))
+                {
+                    source = FindFirstRange(doc, request.FindText);
+                    if (source == null)
+                    {
+                        throw new McpToolException(McpErrorCodes.TextNotFound,
+                            $"未找到要复制的内容：{request.FindText}");
+                    }
+                }
+                else
+                {
+                    var startIndex = request.SourceStartParagraph ?? 1;
+                    var endIndex = request.SourceEndParagraph ?? startIndex;
+                    if (endIndex < startIndex)
+                    {
+                        var temp = startIndex;
+                        startIndex = endIndex;
+                        endIndex = temp;
+                    }
+
+                    GetParagraphOrThrow(doc, startIndex);
+                    GetParagraphOrThrow(doc, endIndex);
+                    object startObj = doc.Paragraphs[startIndex].Range.Start;
+                    object endObj = doc.Paragraphs[endIndex].Range.End;
+                    source = doc.Range(ref startObj, ref endObj);
+                }
+
+                int start;
+                if (request.TargetParagraph.HasValue)
+                {
+                    var insertAt = GetParagraphOrThrow(doc, request.TargetParagraph.Value).Range;
+                    insertAt.Collapse(WdCollapseDirection.wdCollapseStart);
+                    start = insertAt.Start;
+                    insertAt.FormattedText = source.FormattedText;
+                }
+                else
+                {
+                    // 文末追加需保留段落标记与格式，单独处理
+                    start = doc.Content.End;
+                    AppendParagraphRange(doc, source);
+                }
+
+                var index = GetParagraphIndexAt(doc, start);
+                if (index < 1 || index > doc.Paragraphs.Count)
+                {
+                    index = doc.Paragraphs.Count;
+                }
+
+                return DescribeParagraph(doc, index);
+            });
+        }
+
+        // ============================== P0 增强：图片 ==============================
+
+        public List<ImageEntry> ListImages()
+        {
+            return Run("列出图片", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var result = new List<ImageEntry>();
+
+                for (var i = 1; i <= doc.InlineShapes.Count; i++)
+                {
+                    InlineShape shape = null;
+                    try
+                    {
+                        shape = doc.InlineShapes[i];
+                        var type = SafeRead(() => shape.Type);
+                        if (type != WdInlineShapeType.wdInlineShapePicture &&
+                            type != WdInlineShapeType.wdInlineShapeLinkedPicture)
+                        {
+                            continue;
+                        }
+
+                        var rangeStart = SafeRead(() => shape.Range.Start);
+                        result.Add(new ImageEntry
+                        {
+                            Kind = "inline",
+                            Index = i,
+                            Width = SafeRead(() => (double)shape.Width),
+                            Height = SafeRead(() => (double)shape.Height),
+                            AltText = SafeRead(() => shape.AlternativeText),
+                            ParagraphIndex = GetParagraphIndexAt(doc, rangeStart),
+                        });
+                    }
+                    finally
+                    {
+                        TryRelease(shape);
+                    }
+                }
+
+                for (var i = 1; i <= doc.Shapes.Count; i++)
+                {
+                    Shape shape = null;
+                    try
+                    {
+                        shape = doc.Shapes[i];
+                        var type = SafeRead(() => shape.Type);
+                        if (type != OfficeCore.MsoShapeType.msoPicture &&
+                            type != OfficeCore.MsoShapeType.msoLinkedPicture)
+                        {
+                            continue;
+                        }
+
+                        var anchorStart = SafeRead(() => shape.Anchor.Start);
+                        result.Add(new ImageEntry
+                        {
+                            Kind = "floating",
+                            Index = i,
+                            Name = SafeRead(() => shape.Name),
+                            Width = SafeRead(() => (double)shape.Width),
+                            Height = SafeRead(() => (double)shape.Height),
+                            Left = SafeRead(() => (double?)shape.Left),
+                            Top = SafeRead(() => (double?)shape.Top),
+                            Wrap = SafeRead(() => DescribeWrapType(shape.WrapFormat.Type)),
+                            AltText = SafeRead(() => shape.AlternativeText),
+                            ParagraphIndex = GetParagraphIndexAt(doc, anchorStart),
+                        });
+                    }
+                    finally
+                    {
+                        TryRelease(shape);
+                    }
+                }
+
+                return result;
+            });
+        }
+
+        public ImageEntry UpdateImage(UpdateImageRequest request)
+        {
+            return Mutate("修改图片", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var kind = (request.Kind ?? "inline").Trim().ToLowerInvariant();
+
+                if (kind == "inline")
+                {
+                    if (!request.Index.HasValue)
+                    {
+                        throw new McpToolException(McpErrorCodes.InvalidParams, "inline 图片需要提供 index");
+                    }
+
+                    var index = request.Index.Value;
+                    if (index < 1 || index > doc.InlineShapes.Count)
+                    {
+                        throw new McpToolException(McpErrorCodes.ImageNotFound,
+                            $"内嵌图片索引 {index} 超出范围（当前共 {doc.InlineShapes.Count} 个）");
+                    }
+
+                    InlineShape shape = null;
+                    try
+                    {
+                        shape = doc.InlineShapes[index];
+                        if (request.Width.HasValue) shape.Width = (float)request.Width.Value;
+                        if (request.Height.HasValue) shape.Height = (float)request.Height.Value;
+                        if (request.ScaleWidthPercent.HasValue) shape.ScaleWidth = (float)request.ScaleWidthPercent.Value;
+                        if (request.ScaleHeightPercent.HasValue) shape.ScaleHeight = (float)request.ScaleHeightPercent.Value;
+
+                        var picture = shape.PictureFormat;
+                        if (request.CropTop.HasValue) picture.CropTop = (float)request.CropTop.Value;
+                        if (request.CropBottom.HasValue) picture.CropBottom = (float)request.CropBottom.Value;
+                        if (request.CropLeft.HasValue) picture.CropLeft = (float)request.CropLeft.Value;
+                        if (request.CropRight.HasValue) picture.CropRight = (float)request.CropRight.Value;
+
+                        if (request.AltText != null) shape.AlternativeText = request.AltText;
+                        if (request.Title != null) shape.Title = request.Title;
+                        return DescribeInlineImage(doc, index);
+                    }
+                    finally
+                    {
+                        TryRelease(shape);
+                    }
+                }
+
+                if (kind != "floating")
+                {
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的图片类型：{request.Kind}（支持 inline / floating）");
+                }
+
+                Shape floating = FindShapeOrNull(doc, request.Name, request.Index);
+                if (floating == null)
+                {
+                    throw new McpToolException(McpErrorCodes.ImageNotFound,
+                        $"找不到浮动图片：{(string.IsNullOrEmpty(request.Name) ? "#" + request.Index : request.Name)}");
+                }
+
+                try
+                {
+                    if (request.Width.HasValue) floating.Width = (float)request.Width.Value;
+                    if (request.Height.HasValue) floating.Height = (float)request.Height.Value;
+                    if (request.AltText != null) floating.AlternativeText = request.AltText;
+                    if (request.Title != null) floating.Title = request.Title;
+                    return DescribeFloatingImage(doc, floating);
+                }
+                finally
+                {
+                    TryRelease(floating);
+                }
+            });
+        }
+
+        public void DeleteImage(string kind, int? index, string name)
+        {
+            Mutate("删除图片", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var type = (kind ?? "inline").Trim().ToLowerInvariant();
+                if (type == "inline")
+                {
+                    if (!index.HasValue)
+                    {
+                        throw new McpToolException(McpErrorCodes.InvalidParams, "inline 图片需要提供 index");
+                    }
+
+                    if (index.Value < 1 || index.Value > doc.InlineShapes.Count)
+                    {
+                        throw new McpToolException(McpErrorCodes.ImageNotFound,
+                            $"内嵌图片索引 {index.Value} 超出范围（当前共 {doc.InlineShapes.Count} 个）");
+                    }
+
+                    doc.InlineShapes[index.Value].Delete();
+                    return 0;
+                }
+
+                if (type != "floating")
+                {
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的图片类型：{kind}（支持 inline / floating）");
+                }
+
+                var shape = FindShapeOrNull(doc, name, index);
+                if (shape == null)
+                {
+                    throw new McpToolException(McpErrorCodes.ImageNotFound,
+                        $"找不到浮动图片：{(string.IsNullOrEmpty(name) ? "#" + index : name)}");
+                }
+
+                try
+                {
+                    shape.Delete();
+                    return 0;
+                }
+                finally
+                {
+                    TryRelease(shape);
+                }
+            });
+        }
+
+        // ============================== P0 增强：页码 ==============================
+
+        public PageNumbersInfo SetPageNumbers(SetPageNumbersRequest request)
+        {
+            return Mutate("设置页码格式", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var section = GetSectionOrThrow(doc, request.SectionIndex);
+                var numbers = section.Footers[WdHeaderFooterIndex.wdHeaderFooterPrimary].PageNumbers;
+
+                if (!string.IsNullOrEmpty(request.NumberStyle))
+                {
+                    numbers.NumberStyle = ParsePageNumberStyle(request.NumberStyle);
+                }
+
+                // 先设置是否重编号，再设置起始编号（顺序反了起始值会被重置为 0）
+                if (request.RestartAtSection.HasValue)
+                {
+                    numbers.RestartNumberingAtSection = request.RestartAtSection.Value;
+                }
+
+                if (request.StartingNumber.HasValue)
+                {
+                    ValidateStartingNumber(request.StartingNumber.Value);
+                    numbers.StartingNumber = request.StartingNumber.Value;
+                }
+
+                return DescribePageNumbers(doc, request.SectionIndex);
+            });
+        }
+
+        // ============================== P0 增强：修订 / 批注 ==============================
+
+        public List<RevisionInfo> ListRevisions()
+        {
+            return Run("列出修订", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var result = new List<RevisionInfo>();
+                for (var i = 1; i <= doc.Revisions.Count && result.Count < 1000; i++)
+                {
+                    result.Add(DescribeRevision(doc, i));
+                }
+
+                return result;
+            });
+        }
+
+        public RevisionResult AcceptRevision(int index)
+        {
+            return Mutate("接受修订", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                ValidateRevisionIndex(doc, index);
+                var info = DescribeRevision(doc, index);
+                doc.Revisions[index].Accept();
+                return new RevisionResult
+                {
+                    TrackChanges = doc.TrackRevisions,
+                    RevisionCount = doc.Revisions.Count,
+                    Message = $"已接受修订 #{index}（{info.Type}，作者 {info.Author}）",
+                };
+            });
+        }
+
+        public RevisionResult RejectRevision(int index)
+        {
+            return Mutate("拒绝修订", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                ValidateRevisionIndex(doc, index);
+                var info = DescribeRevision(doc, index);
+                doc.Revisions[index].Reject();
+                return new RevisionResult
+                {
+                    TrackChanges = doc.TrackRevisions,
+                    RevisionCount = doc.Revisions.Count,
+                    Message = $"已拒绝修订 #{index}（{info.Type}，作者 {info.Author}）",
+                };
+            });
+        }
+
+        public CommentInfo GetComment(int index)
+        {
+            return Run("读取批注", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                ValidateCommentIndex(doc, index);
+                return DescribeComment(doc, index);
+            });
+        }
+
+        public CommentInfo ReplyComment(int parentIndex, string text)
+        {
+            return Mutate("回复批注", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                if (string.IsNullOrEmpty(text))
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "缺少必填参数：text");
+                }
+
+                ValidateCommentIndex(doc, parentIndex);
+                Comment parent = null;
+                try
+                {
+                    parent = doc.Comments[parentIndex];
+                    object commentText = NormalizeText(text) ?? string.Empty;
+                    var reply = parent.Replies.Add(parent.Range, ref commentText);
+                    return DescribeComment(doc, reply.Index);
+                }
+                finally
+                {
+                    TryRelease(parent);
+                }
+            });
+        }
+
+        public CommentInfo ResolveComment(int index, bool done)
+        {
+            return Mutate("标记批注", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                ValidateCommentIndex(doc, index);
+                Comment comment = null;
+                try
+                {
+                    comment = doc.Comments[index];
+                    comment.Done = done;
+                    return DescribeComment(doc, index);
+                }
+                finally
+                {
+                    TryRelease(comment);
+                }
+            });
+        }
+
+        // ============================== P0 增强：表格 ==============================
+
+        public TableInfo SetTableBorders(SetTableBordersRequest request)
+        {
+            return Mutate("设置表格边框", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var table = GetTableOrThrow(doc, request.TableIndex);
+                var lineStyle = ParseBorderStyle(request.Style ?? "single");
+                var inside = request.Inside ?? true;
+                var outside = request.Outside ?? true;
+
+                var types = new List<WdBorderType>();
+                if (outside)
+                {
+                    types.Add(WdBorderType.wdBorderTop);
+                    types.Add(WdBorderType.wdBorderBottom);
+                    types.Add(WdBorderType.wdBorderLeft);
+                    types.Add(WdBorderType.wdBorderRight);
+                }
+
+                if (inside)
+                {
+                    types.Add(WdBorderType.wdBorderHorizontal);
+                    types.Add(WdBorderType.wdBorderVertical);
+                }
+
+                var borders = table.Borders;
+                foreach (var borderType in types)
+                {
+                    Border border = null;
+                    try
+                    {
+                        border = borders[borderType];
+                        border.LineStyle = lineStyle;
+                        if (!string.IsNullOrEmpty(request.Width))
+                        {
+                            border.LineWidth = ParseBorderWidth(request.Width);
+                        }
+
+                        if (request.ColorArgb.HasValue)
+                        {
+                            border.Color = ArgbToWdColor(request.ColorArgb.Value);
+                        }
+                    }
+                    finally
+                    {
+                        TryRelease(border);
+                    }
+                }
+
+                return DescribeTable(doc, request.TableIndex);
+            });
+        }
+
+        public TableInfo SetCellPadding(CellPaddingRequest request)
+        {
+            return Mutate("设置单元格内边距", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var table = GetTableOrThrow(doc, request.TableIndex);
+                if (!request.Top.HasValue && !request.Bottom.HasValue &&
+                    !request.Left.HasValue && !request.Right.HasValue)
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams,
+                        "至少提供 top / bottom / left / right 之一");
+                }
+
+                var rowStart = request.Row ?? 1;
+                var rowEnd = request.Row ?? table.Rows.Count;
+                var columnStart = request.Column ?? 1;
+                var columnEnd = request.Column ?? table.Columns.Count;
+                ValidateCellRange(table, rowStart, columnStart, "row", "column");
+                ValidateCellRange(table, rowEnd, columnEnd, "row", "column");
+
+                for (var r = rowStart; r <= rowEnd; r++)
+                {
+                    for (var c = columnStart; c <= columnEnd; c++)
+                    {
+                        Cell cell = null;
+                        try
+                        {
+                            cell = table.Cell(r, c);
+                            if (request.Top.HasValue) cell.TopPadding = (float)request.Top.Value;
+                            if (request.Bottom.HasValue) cell.BottomPadding = (float)request.Bottom.Value;
+                            if (request.Left.HasValue) cell.LeftPadding = (float)request.Left.Value;
+                            if (request.Right.HasValue) cell.RightPadding = (float)request.Right.Value;
+                        }
+                        catch
+                        {
+                            // 合并单元格的覆盖位置访问会失败，跳过
+                        }
+                        finally
+                        {
+                            TryRelease(cell);
+                        }
+                    }
+                }
+
+                return DescribeTable(doc, request.TableIndex);
+            });
+        }
+
+        public TableInfo SortTable(SortTableRequest request)
+        {
+            return Mutate("表格排序", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var table = GetTableOrThrow(doc, request.TableIndex);
+                if (request.KeyColumn < 1 || request.KeyColumn > table.Columns.Count)
+                {
+                    throw new McpToolException(McpErrorCodes.TableCellOutOfRange,
+                        $"排序列 {request.KeyColumn} 超出范围（当前共 {table.Columns.Count} 列）");
+                }
+
+                object excludeHeader = request.HasHeader;
+                object fieldNumber = request.KeyColumn;
+                object sortFieldType = ParseSortFieldType(request.FieldType);
+                object sortOrder = request.Ascending
+                    ? WdSortOrder.wdSortOrderAscending
+                    : WdSortOrder.wdSortOrderDescending;
+                object missing = Type.Missing;
+
+                table.Sort(ref excludeHeader, ref fieldNumber, ref sortFieldType, ref sortOrder,
+                    ref missing, ref missing, ref missing, ref missing, ref missing, ref missing,
+                    ref missing, ref missing, ref missing, ref missing, ref missing, ref missing, ref missing);
+
+                return DescribeTable(doc, request.TableIndex);
+            });
+        }
+
+        public TableInfo ConvertTableToText(int tableIndex, string separator)
+        {
+            return Mutate("表格转文本", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var table = GetTableOrThrow(doc, tableIndex);
+                var info = DescribeTable(doc, tableIndex);
+                object separatorObj = string.IsNullOrEmpty(separator) ? "\t" : separator;
+                object nestedTables = false;
+                table.ConvertToText(ref separatorObj, ref nestedTables);
+                info.TableCount = doc.Tables.Count;
+                info.Message = "表格已转换为文本";
+                return info;
+            });
+        }
+
+        public TableInfo ConvertTextToTable(int startParagraph, int endParagraph, int columns, string separator)
+        {
+            return Mutate("文本转表格", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                GetParagraphOrThrow(doc, startParagraph);
+                GetParagraphOrThrow(doc, endParagraph);
+                if (endParagraph < startParagraph)
+                {
+                    var temp = startParagraph;
+                    startParagraph = endParagraph;
+                    endParagraph = temp;
+                }
+
+                object startObj = doc.Paragraphs[startParagraph].Range.Start;
+                object endObj = doc.Paragraphs[endParagraph].Range.End;
+                var range = doc.Range(ref startObj, ref endObj);
+
+                object separatorObj = string.IsNullOrEmpty(separator) ? "\t" : separator;
+                object missing = Type.Missing;
+                object numColumns = columns > 0 ? (object)columns : missing;
+
+                Table table = null;
+                try
+                {
+                    table = range.ConvertToTable(ref separatorObj, ref missing, ref numColumns,
+                        ref missing, ref missing, ref missing, ref missing, ref missing, ref missing,
+                        ref missing, ref missing, ref missing, ref missing, ref missing, ref missing, ref missing);
+                    return DescribeTable(doc, GetTableIndex(doc, table));
+                }
+                finally
+                {
+                    TryRelease(table);
+                }
+            });
+        }
+
+        // ============================== P0 增强：保护 / 封面 ==============================
+
+        public ProtectionInfo ProtectDocument(string protectionType, string password)
+        {
+            return Mutate("保护文档", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                var type = ParseProtectionType(protectionType);
+                object noReset = false;
+                object passwordObj = string.IsNullOrEmpty(password) ? Type.Missing : (object)password;
+                object useIRM = false;
+                object enforceStyleLock = false;
+                doc.Protect(type, ref noReset, ref passwordObj, ref useIRM, ref enforceStyleLock);
+                return DescribeProtection(doc);
+            });
+        }
+
+        public ProtectionInfo UnprotectDocument(string password)
+        {
+            return Mutate("取消文档保护", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                object passwordObj = string.IsNullOrEmpty(password) ? Type.Missing : (object)password;
+                doc.Unprotect(ref passwordObj);
+                return DescribeProtection(doc);
+            });
+        }
+
+        public ProtectionInfo MarkAsFinal(bool final)
+        {
+            return Mutate("标记为最终状态", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                if (final && string.IsNullOrEmpty(SafeRead(() => doc.Path)))
+                {
+                    // 未保存文档设置 Final 会弹出“另存为”模态框并阻塞自动化调用
+                    throw new McpToolException(McpErrorCodes.OperationFailed,
+                        "文档尚未保存，无法标记为最终状态；请先使用 save_document 保存后再标记");
+                }
+
+                doc.Final = final;
+                return DescribeProtection(doc);
+            });
+        }
+
+        public CoverPageResult InsertCoverPage(CoverPageRequest request)
+        {
+            return Mutate("插入封面页", () =>
+            {
+                var doc = GetActiveDocumentOrThrow();
+                if (string.IsNullOrWhiteSpace(request.Title))
+                {
+                    throw new McpToolException(McpErrorCodes.InvalidParams, "缺少必填参数：title");
+                }
+
+                // 文档以表格开头时，位置 0 位于首个单元格内，无法直接插入内容；
+                // 先插入分节符创建文首段落，封面写入后再删除分节符，避免影响原有节设置
+                var startsWithTable = doc.Paragraphs.Count > 0 &&
+                    SafeRead(() => (bool)doc.Paragraphs[1].Range.Information[WdInformation.wdWithInTable]);
+                var sectionBreakAdded = false;
+                if (startsWithTable)
+                {
+                    object breakStart = 0;
+                    object breakEnd = 0;
+                    var breakRange = doc.Range(ref breakStart, ref breakEnd);
+                    object breakType = WdBreakType.wdSectionBreakContinuous;
+                    breakRange.InsertBreak(ref breakType);
+                    sectionBreakAdded = true;
+                }
+
+                var lines = new List<Tuple<string, string>>
+                {
+                    Tuple.Create(request.Title, "title"),
+                };
+                if (!string.IsNullOrWhiteSpace(request.Subtitle))
+                {
+                    lines.Add(Tuple.Create(request.Subtitle, "subtitle"));
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.Author))
+                {
+                    lines.Add(Tuple.Create(request.Author, "normal"));
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.Institution))
+                {
+                    lines.Add(Tuple.Create(request.Institution, "normal"));
+                }
+
+                var dateText = string.IsNullOrWhiteSpace(request.Date)
+                    ? DateTime.Now.ToString("yyyy年M月d日")
+                    : request.Date;
+                lines.Add(Tuple.Create(dateText, "normal"));
+
+                // 在文档最开头（位置 0）插入封面文本；不能按“段落 1”插入，文档可能以表格开头
+                object zero = 0;
+                object zeroEnd = 0;
+                var start = doc.Range(ref zero, ref zeroEnd);
+                var coverText = string.Join("\r", lines.ConvertAll(line => line.Item1)) + "\r";
+                start.InsertAfter(coverText);
+
+                // 套用样式（标题/副标题/正文）
+                for (var i = 1; i <= lines.Count; i++)
+                {
+                    object styleObj = ResolveStyleValue(doc,
+                        lines[i - 1].Item2 == "title" ? "title" : lines[i - 1].Item2 == "subtitle" ? "subtitle" : "normal");
+                    doc.Paragraphs[i].Range.set_Style(ref styleObj);
+                }
+
+                // 统一居中与间距
+                for (var i = 1; i <= lines.Count; i++)
+                {
+                    var paragraph = doc.Paragraphs[i];
+                    var format = paragraph.Range.ParagraphFormat;
+                    format.Alignment = WdParagraphAlignment.wdAlignParagraphCenter;
+                    format.SpaceBefore = 0;
+                    format.SpaceAfter = 12;
+                    if (i == 1)
+                    {
+                        format.SpaceBefore = 120;
+                        paragraph.Range.Font.Size = 26;
+                    }
+                    else if (i == 2)
+                    {
+                        paragraph.Range.Font.Size = 16;
+                    }
+                }
+
+                if (sectionBreakAdded)
+                {
+                    // 删除临时分节符：其字符位于第 1 节末尾（封面最后一段之后）
+                    var sectionEnd = doc.Sections[1].Range.End;
+                    object breakStart = sectionEnd - 1;
+                    object breakEnd = sectionEnd;
+                    var breakRange = doc.Range(ref breakStart, ref breakEnd);
+                    breakRange.Delete();
+                }
+
+                if (request.PageBreak)
+                {
+                    // 在封面最后一段的段落标记之前插入分页符，正文（可能是表格）从新页开始
+                    var breakRange = GetParagraphEndRange(doc, lines.Count);
+                    object breakType = WdBreakType.wdPageBreak;
+                    breakRange.InsertBreak(ref breakType);
+                }
+
+                return new CoverPageResult
+                {
+                    Title = request.Title,
+                    CoverParagraphs = lines.Count,
+                    ParagraphCount = doc.Paragraphs.Count,
+                };
+            });
+        }
+
         // ============================== 私有实现 ==============================
 
         /// <summary>只读操作：封送 UI 线程并统一包装异常。</summary>
@@ -3001,6 +4000,83 @@ namespace WordMcpServer.Services
             }
 
             return doc.Paragraphs[paragraphIndex];
+        }
+
+        /// <summary>
+        /// 将源范围（可含多段）追加到文档末尾，保留段落与字符格式。
+        /// 注意：不能先新增空段再赋值完整 FormattedText（会多出空段落），
+        /// 也不能直接向文档末尾赋值（会丢失段落标记导致段落合并）。
+        /// </summary>
+        private static void AppendParagraphRange(Document doc, Range source)
+        {
+            // 必须在插入前确定边界与格式：InsertParagraphAfter 会扩展文档末段的 Range，
+            // 使 source 把新增的段落标记也包含进来
+            var text = SafeRead(() => source.Text) ?? string.Empty;
+            var contentStart = source.Start;
+            var contentEnd = text.EndsWith("\r", StringComparison.Ordinal) ? source.End - 1 : source.End;
+
+            object styleObj = null;
+            ParagraphFormat sourceFormat = null;
+            Paragraph sourceLast = null;
+            try
+            {
+                var paragraphs = source.Paragraphs;
+                sourceLast = paragraphs[paragraphs.Count];
+                var sourceLastRange = sourceLast.Range;
+                styleObj = sourceLastRange.get_Style();
+                sourceFormat = sourceLastRange.ParagraphFormat;
+            }
+            catch (Exception)
+            {
+                // 段落格式读取失败时保持目标段落默认格式
+            }
+            finally
+            {
+                TryRelease(sourceLast);
+            }
+
+            var end = doc.Content;
+            try
+            {
+                end.Collapse(WdCollapseDirection.wdCollapseEnd);
+                end.InsertParagraphAfter();
+
+                var target = doc.Paragraphs[doc.Paragraphs.Count].Range;
+                try
+                {
+                    // 先复制样式与段落格式（随后写入内容不会覆盖段落格式）
+                    if (styleObj != null)
+                    {
+                        target.set_Style(ref styleObj);
+                    }
+
+                    if (sourceFormat != null)
+                    {
+                        target.ParagraphFormat = sourceFormat;
+                    }
+
+                    // 去掉源范围末尾的段落标记，写入目标段落自带的段落标记，避免多出空段落
+                    object contentStartObj = contentStart;
+                    object contentEndObj = contentEnd;
+                    var content = doc.Range(ref contentStartObj, ref contentEndObj);
+                    try
+                    {
+                        target.FormattedText = content.FormattedText;
+                    }
+                    finally
+                    {
+                        TryRelease(content);
+                    }
+                }
+                finally
+                {
+                    TryRelease(target);
+                }
+            }
+            finally
+            {
+                TryRelease(end);
+            }
         }
 
         /// <summary>
@@ -3449,16 +4525,21 @@ namespace WordMcpServer.Services
             };
         }
 
-        private static HeaderFooterInfo DescribeHeaderFooter(Document doc, int sectionIndex)
+        private static HeaderFooterInfo DescribeHeaderFooter(Document doc, int sectionIndex, string headerType)
         {
             var section = doc.Sections[sectionIndex];
-            var header = section.Headers[WdHeaderFooterIndex.wdHeaderFooterPrimary];
-            var footer = section.Footers[WdHeaderFooterIndex.wdHeaderFooterPrimary];
+            var headerIndex = ParseHeaderFooterType(headerType);
+            var header = section.Headers[headerIndex];
+            var footer = section.Footers[headerIndex];
             return new HeaderFooterInfo
             {
                 SectionIndex = sectionIndex,
+                HeaderType = NormalizeHeaderTypeName(headerType),
                 HeaderText = TrimParagraphText(SafeRead(() => header.Range.Text)),
                 FooterText = TrimParagraphText(SafeRead(() => footer.Range.Text)),
+                LinkToPrevious = SafeRead(() => (bool?)header.LinkToPrevious),
+                DifferentFirstPage = SafeRead(() => section.PageSetup.DifferentFirstPageHeaderFooter == -1),
+                OddEvenPages = SafeRead(() => section.PageSetup.OddAndEvenPagesHeaderFooter == -1),
                 SectionCount = doc.Sections.Count,
             };
         }
@@ -3725,6 +4806,8 @@ namespace WordMcpServer.Services
                 Initial = SafeRead(() => comment.Initial),
                 Text = SafeRead(() => TrimParagraphText(comment.Range.Text)),
                 ScopeText = SafeRead(() => TrimParagraphText(comment.Scope.Text)),
+                Done = SafeRead(() => comment.Done),
+                ReplyCount = SafeRead(() => comment.Replies.Count),
             };
         }
 
@@ -4050,18 +5133,23 @@ namespace WordMcpServer.Services
                 case "":
                 case "docx":
                 case "documentdefault": return WdSaveFormat.wdFormatDocumentDefault;
+                case "docm": return WdSaveFormat.wdFormatXMLDocumentMacroEnabled;
                 case "xml":
-                case "wordxml": return WdSaveFormat.wdFormatXMLDocument;
+                case "wordxml": return WdSaveFormat.wdFormatXML;
                 case "doc":
                 case "doc97": return WdSaveFormat.wdFormatDocument;
                 case "rtf": return WdSaveFormat.wdFormatRTF;
                 case "txt":
                 case "text": return WdSaveFormat.wdFormatText;
                 case "odt": return WdSaveFormat.wdFormatOpenDocumentText;
+                case "html":
+                case "htm": return WdSaveFormat.wdFormatHTML;
+                case "mhtml":
+                case "mht": return WdSaveFormat.wdFormatWebArchive;
                 case "pdf": throw new McpToolException(McpErrorCodes.UnsupportedType, "保存为 PDF 请使用 export_to_pdf 工具");
                 default:
                     throw new McpToolException(McpErrorCodes.UnsupportedType,
-                        $"不支持的保存格式：{key}（支持 docx / doc / rtf / txt / odt）");
+                        $"不支持的保存格式：{key}（支持 docx / docm / doc / rtf / txt / odt / html / mhtml / xml）");
             }
         }
 
@@ -5150,6 +6238,564 @@ namespace WordMcpServer.Services
             }
 
             return text.TrimEnd('\r', '\a').Replace("\v", "\n").Replace("\r", "\n");
+        }
+
+        // ---------- P0 增强辅助 ----------
+
+        private SelectionInfo DescribeSelection(Document doc)
+        {
+            var selection = _app.Selection;
+            var start = SafeRead(() => selection.Start);
+            var end = SafeRead(() => selection.End);
+            return new SelectionInfo
+            {
+                SelectionType = SafeRead(() => DescribeSelectionType(selection.Type)),
+                Start = start,
+                End = end,
+                // 光标（空选区）时 Selection.Text 会返回光标后的字符，这里统一置空
+                Text = start == end ? string.Empty : SafeRead(() => selection.Text),
+                ParagraphIndex = GetParagraphIndexAt(doc, end),
+                PageNumber = SafeRead(() => (int)selection.Information[WdInformation.wdActiveEndPageNumber]),
+                IsEmpty = start == end,
+            };
+        }
+
+        private static string DescribeSelectionType(WdSelectionType type)
+        {
+            switch (type)
+            {
+                case WdSelectionType.wdNoSelection: return "none";
+                case WdSelectionType.wdSelectionIP: return "insertion-point";
+                case WdSelectionType.wdSelectionNormal: return "normal";
+                case WdSelectionType.wdSelectionRow: return "row";
+                case WdSelectionType.wdSelectionColumn: return "column";
+                case WdSelectionType.wdSelectionBlock: return "block";
+                case WdSelectionType.wdSelectionInlineShape: return "inline-shape";
+                case WdSelectionType.wdSelectionShape: return "shape";
+                default: return type.ToString();
+            }
+        }
+
+        private static ImageEntry DescribeInlineImage(Document doc, int index)
+        {
+            InlineShape shape = null;
+            try
+            {
+                shape = doc.InlineShapes[index];
+                var rangeStart = SafeRead(() => shape.Range.Start);
+                return new ImageEntry
+                {
+                    Kind = "inline",
+                    Index = index,
+                    Width = SafeRead(() => (double)shape.Width),
+                    Height = SafeRead(() => (double)shape.Height),
+                    AltText = SafeRead(() => shape.AlternativeText),
+                    ParagraphIndex = GetParagraphIndexAt(doc, rangeStart),
+                };
+            }
+            finally
+            {
+                TryRelease(shape);
+            }
+        }
+
+        private static ImageEntry DescribeFloatingImage(Document doc, Shape shape)
+        {
+            var anchorStart = SafeRead(() => shape.Anchor.Start);
+            return new ImageEntry
+            {
+                Kind = "floating",
+                Index = FindShapeIndex(doc, shape),
+                Name = SafeRead(() => shape.Name),
+                Width = SafeRead(() => (double)shape.Width),
+                Height = SafeRead(() => (double)shape.Height),
+                Left = SafeRead(() => (double?)shape.Left),
+                Top = SafeRead(() => (double?)shape.Top),
+                Wrap = SafeRead(() => DescribeWrapType(shape.WrapFormat.Type)),
+                AltText = SafeRead(() => shape.AlternativeText),
+                ParagraphIndex = GetParagraphIndexAt(doc, anchorStart),
+            };
+        }
+
+        private static int FindInlineShapeIndex(Document doc, InlineShape shape)
+        {
+            try
+            {
+                var start = shape.Range.Start;
+                for (var i = 1; i <= doc.InlineShapes.Count; i++)
+                {
+                    if (doc.InlineShapes[i].Range.Start == start)
+                    {
+                        return i;
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略
+            }
+
+            return doc.InlineShapes.Count;
+        }
+
+        private static int FindShapeIndex(Document doc, Shape shape)
+        {
+            try
+            {
+                var name = shape.Name;
+                for (var i = 1; i <= doc.Shapes.Count; i++)
+                {
+                    if (string.Equals(doc.Shapes[i].Name, name, StringComparison.Ordinal))
+                    {
+                        return i;
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略
+            }
+
+            return doc.Shapes.Count;
+        }
+
+        private static Shape FindShapeOrNull(Document doc, string name, int? index)
+        {
+            if (!string.IsNullOrEmpty(name))
+            {
+                try
+                {
+                    return doc.Shapes[name];
+                }
+                catch
+                {
+                    // 继续按索引查找
+                }
+            }
+
+            if (index.HasValue)
+            {
+                if (index.Value < 1 || index.Value > doc.Shapes.Count)
+                {
+                    throw new McpToolException(McpErrorCodes.ImageNotFound,
+                        $"浮动图片索引 {index.Value} 超出范围（当前共 {doc.Shapes.Count} 个）");
+                }
+
+                return doc.Shapes[index.Value];
+            }
+
+            return null;
+        }
+
+        private static string DescribeWrapType(WdWrapType type)
+        {
+            switch (type)
+            {
+                case WdWrapType.wdWrapSquare: return "square";
+                case WdWrapType.wdWrapTight: return "tight";
+                case WdWrapType.wdWrapThrough: return "through";
+                case WdWrapType.wdWrapTopBottom: return "top-bottom";
+                case WdWrapType.wdWrapBehind: return "behind";
+                case WdWrapType.wdWrapNone: return "none";
+                default: return type.ToString();
+            }
+        }
+
+        private static WdWrapType ParseWrapType(string wrap)
+        {
+            switch (wrap.Trim().ToLowerInvariant())
+            {
+                case "square": return WdWrapType.wdWrapSquare;
+                case "tight": return WdWrapType.wdWrapTight;
+                case "through": return WdWrapType.wdWrapThrough;
+                case "none": return WdWrapType.wdWrapNone;
+                case "top-bottom": return WdWrapType.wdWrapTopBottom;
+                case "behind": return WdWrapType.wdWrapBehind;
+                case "front": return WdWrapType.wdWrapFront;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的环绕方式：{wrap}（支持 square / tight / through / none / top-bottom / behind / front）");
+            }
+        }
+
+        private static WdRelativeHorizontalPosition ParseRelativeHorizontal(string relativeTo)
+        {
+            switch ((relativeTo ?? "page").Trim().ToLowerInvariant())
+            {
+                case "page": return WdRelativeHorizontalPosition.wdRelativeHorizontalPositionPage;
+                case "margin": return WdRelativeHorizontalPosition.wdRelativeHorizontalPositionMargin;
+                case "column":
+                case "paragraph": return WdRelativeHorizontalPosition.wdRelativeHorizontalPositionColumn;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的定位基准：{relativeTo}（支持 page / margin / column / paragraph）");
+            }
+        }
+
+        private static WdRelativeVerticalPosition ParseRelativeVertical(string relativeTo)
+        {
+            switch ((relativeTo ?? "page").Trim().ToLowerInvariant())
+            {
+                case "page": return WdRelativeVerticalPosition.wdRelativeVerticalPositionPage;
+                case "margin": return WdRelativeVerticalPosition.wdRelativeVerticalPositionMargin;
+                case "column":
+                case "paragraph": return WdRelativeVerticalPosition.wdRelativeVerticalPositionParagraph;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的定位基准：{relativeTo}（支持 page / margin / column / paragraph）");
+            }
+        }
+
+        private static WdHeaderFooterIndex ParseHeaderFooterType(string headerType)
+        {
+            switch ((headerType ?? "primary").Trim().ToLowerInvariant())
+            {
+                case "primary":
+                case "first": // 兼容旧参数误用
+                case "":
+                    return WdHeaderFooterIndex.wdHeaderFooterPrimary;
+                case "first-page":
+                case "firstpage":
+                    return WdHeaderFooterIndex.wdHeaderFooterFirstPage;
+                case "even-pages":
+                case "even":
+                    return WdHeaderFooterIndex.wdHeaderFooterEvenPages;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的页眉页脚类型：{headerType}（支持 primary / first-page / even-pages）");
+            }
+        }
+
+        private static string NormalizeHeaderTypeName(string headerType)
+        {
+            switch ((headerType ?? "primary").Trim().ToLowerInvariant())
+            {
+                case "first-page":
+                case "firstpage":
+                    return "first-page";
+                case "even-pages":
+                case "even":
+                    return "even-pages";
+                default:
+                    return "primary";
+            }
+        }
+
+        private static PageNumbersInfo DescribePageNumbers(Document doc, int sectionIndex)
+        {
+            var numbers = doc.Sections[sectionIndex].Footers[WdHeaderFooterIndex.wdHeaderFooterPrimary].PageNumbers;
+            return new PageNumbersInfo
+            {
+                SectionIndex = sectionIndex,
+                NumberStyle = SafeRead(() => DescribePageNumberStyle(numbers.NumberStyle)),
+                StartingNumber = SafeRead(() => numbers.StartingNumber),
+                RestartAtSection = SafeRead(() => numbers.RestartNumberingAtSection),
+            };
+        }
+
+        private static WdPageNumberStyle ParsePageNumberStyle(string style)
+        {
+            switch (style.Trim().ToLowerInvariant())
+            {
+                case "arabic": return WdPageNumberStyle.wdPageNumberStyleArabic;
+                case "upper-roman": return WdPageNumberStyle.wdPageNumberStyleUppercaseRoman;
+                case "lower-roman": return WdPageNumberStyle.wdPageNumberStyleLowercaseRoman;
+                case "upper-letter": return WdPageNumberStyle.wdPageNumberStyleUppercaseLetter;
+                case "lower-letter": return WdPageNumberStyle.wdPageNumberStyleLowercaseLetter;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的页码样式：{style}（支持 arabic / upper-roman / lower-roman / upper-letter / lower-letter）");
+            }
+        }
+
+        private static string DescribePageNumberStyle(WdPageNumberStyle style)
+        {
+            switch (style)
+            {
+                case WdPageNumberStyle.wdPageNumberStyleArabic: return "arabic";
+                case WdPageNumberStyle.wdPageNumberStyleUppercaseRoman: return "upper-roman";
+                case WdPageNumberStyle.wdPageNumberStyleLowercaseRoman: return "lower-roman";
+                case WdPageNumberStyle.wdPageNumberStyleUppercaseLetter: return "upper-letter";
+                case WdPageNumberStyle.wdPageNumberStyleLowercaseLetter: return "lower-letter";
+                default: return style.ToString();
+            }
+        }
+
+        private static void ValidateRevisionIndex(Document doc, int index)
+        {
+            var count = doc.Revisions.Count;
+            if (index < 1 || index > count)
+            {
+                throw new McpToolException(McpErrorCodes.RevisionNotFound,
+                    $"修订索引 {index} 超出范围（当前共 {count} 处修订）");
+            }
+        }
+
+        private static RevisionInfo DescribeRevision(Document doc, int index)
+        {
+            Revision revision = null;
+            try
+            {
+                revision = doc.Revisions[index];
+                var start = SafeRead(() => revision.Range.Start);
+                return new RevisionInfo
+                {
+                    Index = index,
+                    Type = SafeRead(() => DescribeRevisionType(revision.Type)),
+                    Author = SafeRead(() => revision.Author),
+                    Date = SafeRead(() => revision.Date.ToString("yyyy-MM-dd HH:mm:ss")),
+                    Text = TrimParagraphText(SafeRead(() => revision.Range.Text)),
+                    ParagraphIndex = GetParagraphIndexAt(doc, start),
+                };
+            }
+            finally
+            {
+                TryRelease(revision);
+            }
+        }
+
+        private static string DescribeRevisionType(WdRevisionType type)
+        {
+            switch (type)
+            {
+                case WdRevisionType.wdRevisionInsert: return "insert";
+                case WdRevisionType.wdRevisionDelete: return "delete";
+                case WdRevisionType.wdRevisionProperty: return "property";
+                case WdRevisionType.wdRevisionCellInsertion: return "cell-insert";
+                case WdRevisionType.wdRevisionCellDeletion: return "cell-delete";
+                case WdRevisionType.wdRevisionCellMerge: return "cell-merge";
+                case WdRevisionType.wdRevisionCellSplit: return "cell-split";
+                case WdRevisionType.wdRevisionParagraphProperty: return "paragraph-format";
+                case WdRevisionType.wdRevisionSectionProperty: return "section-format";
+                case WdRevisionType.wdRevisionTableProperty: return "table-format";
+                case WdRevisionType.wdRevisionStyle: return "style";
+                case WdRevisionType.wdRevisionReplace: return "replace";
+                default: return type.ToString();
+            }
+        }
+
+        private static void ValidateCommentIndex(Document doc, int index)
+        {
+            var count = doc.Comments.Count;
+            if (index < 1 || index > count)
+            {
+                throw new McpToolException(McpErrorCodes.CommentNotFound,
+                    $"批注索引 {index} 超出范围（当前共 {count} 条批注）");
+            }
+        }
+
+        private static WdProtectionType ParseProtectionType(string protectionType)
+        {
+            switch ((protectionType ?? "read-only").Trim().ToLowerInvariant())
+            {
+                case "read-only":
+                case "readonly":
+                case "reading": return WdProtectionType.wdAllowOnlyReading;
+                case "comments": return WdProtectionType.wdAllowOnlyComments;
+                case "forms": return WdProtectionType.wdAllowOnlyFormFields;
+                case "revisions": return WdProtectionType.wdAllowOnlyRevisions;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的保护类型：{protectionType}（支持 read-only / comments / forms / revisions）");
+            }
+        }
+
+        private static ProtectionInfo DescribeProtection(Document doc)
+        {
+            return new ProtectionInfo
+            {
+                ProtectionType = SafeRead(() => DescribeProtectionType(doc.ProtectionType)),
+                Protected = SafeRead(() => doc.ProtectionType != WdProtectionType.wdNoProtection),
+                IsFinal = SafeRead(() => doc.Final),
+            };
+        }
+
+        private static string DescribeProtectionType(WdProtectionType type)
+        {
+            switch (type)
+            {
+                case WdProtectionType.wdNoProtection: return "none";
+                case WdProtectionType.wdAllowOnlyReading: return "read-only";
+                case WdProtectionType.wdAllowOnlyComments: return "comments";
+                case WdProtectionType.wdAllowOnlyFormFields: return "forms";
+                case WdProtectionType.wdAllowOnlyRevisions: return "revisions";
+                default: return type.ToString();
+            }
+        }
+
+        private static WdSortFieldType ParseSortFieldType(string fieldType)
+        {
+            switch ((fieldType ?? "alphanumeric").Trim().ToLowerInvariant())
+            {
+                case "numeric":
+                case "number": return WdSortFieldType.wdSortFieldNumeric;
+                case "date": return WdSortFieldType.wdSortFieldDate;
+                default: return WdSortFieldType.wdSortFieldAlphanumeric;
+            }
+        }
+
+        /// <summary>按范围语义解析查找范围（document / selection / headers-footers）。</summary>
+        private List<Range> ResolveFindRanges(Document doc, string scope)
+        {
+            var ranges = new List<Range>();
+            switch ((scope ?? "document").Trim().ToLowerInvariant())
+            {
+                case "document":
+                case "":
+                    ranges.Add(doc.Content);
+                    break;
+                case "selection":
+                    ranges.Add(_app.Selection.Range);
+                    break;
+                case "headers-footers":
+                case "headers":
+                    for (var s = 1; s <= doc.Sections.Count; s++)
+                    {
+                        Section section = null;
+                        try
+                        {
+                            section = doc.Sections[s];
+                            foreach (var type in new[]
+                                     {
+                                         WdHeaderFooterIndex.wdHeaderFooterPrimary,
+                                         WdHeaderFooterIndex.wdHeaderFooterFirstPage,
+                                         WdHeaderFooterIndex.wdHeaderFooterEvenPages,
+                                     })
+                            {
+                                try
+                                {
+                                    var header = section.Headers[type];
+                                    if (header.Exists)
+                                    {
+                                        ranges.Add(header.Range);
+                                    }
+                                }
+                                catch
+                                {
+                                    // 忽略
+                                }
+
+                                try
+                                {
+                                    var footer = section.Footers[type];
+                                    if (footer.Exists)
+                                    {
+                                        ranges.Add(footer.Range);
+                                    }
+                                }
+                                catch
+                                {
+                                    // 忽略
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            TryRelease(section);
+                        }
+                    }
+
+                    break;
+                default:
+                    throw new McpToolException(McpErrorCodes.UnsupportedType,
+                        $"不支持的查找范围：{scope}（支持 document / selection / headers-footers）");
+            }
+
+            return ranges;
+        }
+
+        /// <summary>在单个范围内执行替换；occurrence 由调用方跨范围累计。</summary>
+        private static int ReplaceInRange(Range range, FindReplaceRequest request, ref int occurrenceCounter)
+        {
+            var find = range.Find;
+            find.ClearFormatting();
+            find.Replacement.ClearFormatting();
+            find.Text = request.FindText;
+            find.Replacement.Text = NormalizeText(request.ReplaceText) ?? string.Empty;
+            find.MatchCase = request.MatchCase;
+            find.MatchWholeWord = request.MatchWholeWord;
+            find.MatchWildcards = request.MatchWildcards;
+            find.Forward = true;
+            find.Wrap = WdFindWrap.wdFindStop;
+
+            object missing = Type.Missing;
+            object findTextObj = request.FindText;
+            object replaceOne = WdReplace.wdReplaceOne;
+            var replaced = 0;
+
+            if (request.Occurrence.HasValue)
+            {
+                while (occurrenceCounter < request.Occurrence.Value &&
+                       find.Execute(ref findTextObj, ref missing, ref missing, ref missing, ref missing,
+                           ref missing, ref missing, ref missing, ref missing, ref missing, ref missing,
+                           ref missing, ref missing, ref missing, ref missing))
+                {
+                    occurrenceCounter++;
+                    if (occurrenceCounter == request.Occurrence.Value)
+                    {
+                        range.Text = NormalizeText(request.ReplaceText) ?? string.Empty;
+                        replaced = 1;
+                        break;
+                    }
+
+                    range.Collapse(WdCollapseDirection.wdCollapseEnd);
+                }
+
+                return replaced;
+            }
+
+            if (request.ReplaceAll)
+            {
+                while (replaced < 10000 && find.Execute(ref findTextObj, ref missing, ref missing, ref missing,
+                    ref missing, ref missing, ref missing, ref missing, ref missing, ref missing, ref replaceOne,
+                    ref missing, ref missing, ref missing, ref missing))
+                {
+                    replaced++;
+                    range.Collapse(WdCollapseDirection.wdCollapseEnd);
+                }
+            }
+            else if (find.Execute(ref findTextObj, ref missing, ref missing, ref missing, ref missing,
+                ref missing, ref missing, ref missing, ref missing, ref missing, ref replaceOne,
+                ref missing, ref missing, ref missing, ref missing))
+            {
+                replaced = 1;
+            }
+
+            return replaced;
+        }
+
+        /// <summary>找到第 N 处匹配文本的范围（1 基）。</summary>
+        private static Range FindNthRange(Document doc, string text, int occurrence)
+        {
+            if (occurrence < 1)
+            {
+                throw new McpToolException(McpErrorCodes.InvalidParams, "occurrence 必须 >= 1");
+            }
+
+            var range = doc.Content;
+            var find = range.Find;
+            find.ClearFormatting();
+            find.Text = text;
+            find.Forward = true;
+            find.Wrap = WdFindWrap.wdFindStop;
+
+            object missing = Type.Missing;
+            object findTextObj = text;
+            var count = 0;
+            while (count < 10000 && find.Execute(ref findTextObj, ref missing, ref missing, ref missing,
+                ref missing, ref missing, ref missing, ref missing, ref missing, ref missing, ref missing,
+                ref missing, ref missing, ref missing, ref missing))
+            {
+                count++;
+                if (count == occurrence)
+                {
+                    return range;
+                }
+
+                range.Collapse(WdCollapseDirection.wdCollapseEnd);
+            }
+
+            return null;
         }
 
         /// <summary>安全读取 COM 属性：失败返回默认值（避免单个属性异常拖垮整个请求）。</summary>

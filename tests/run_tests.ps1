@@ -92,12 +92,12 @@ Assert-True "initialize 返回服务器名" ($init.result.serverInfo.name -eq "w
 
 $tools = Mcp-Call "tools/list" @{}
 $toolNames = @($tools.result.tools | ForEach-Object { $_.name })
-Assert-True "tools/list 返回 >= 80 个工具（实际 $($toolNames.Count)）" ($toolNames.Count -ge 80)
-foreach ($expected in @("get_active_document_info", "add_paragraph", "insert_table", "find_replace_text", "export_to_pdf", "set_page_setup", "get_paragraph", "add_paragraph_runs", "set_list_format", "delete_table", "set_row_height", "update_fields", "create_style", "add_watermark", "insert_footnote", "insert_endnote", "list_notes", "list_hyperlinks", "insert_cross_reference", "insert_caption", "insert_field")) {
+Assert-True "tools/list 返回 >= 100 个工具（实际 $($toolNames.Count)）" ($toolNames.Count -ge 100)
+foreach ($expected in @("get_active_document_info", "add_paragraph", "insert_table", "find_replace_text", "export_to_pdf", "set_page_setup", "get_paragraph", "add_paragraph_runs", "set_list_format", "delete_table", "set_row_height", "update_fields", "create_style", "add_watermark", "insert_footnote", "insert_endnote", "list_notes", "list_hyperlinks", "insert_cross_reference", "insert_caption", "insert_field", "get_selection", "move_paragraph", "list_images", "set_page_numbers", "list_revisions", "reply_comment", "sort_table", "protect_document", "insert_cover_page")) {
     Assert-True "包含工具 $expected" ($toolNames -contains $expected)
 }
 $readOnly = @($tools.result.tools | Where-Object { $_.annotations.readOnlyHint } | ForEach-Object { $_.name })
-Assert-True "只读工具带 readOnlyHint（实际 $($readOnly.Count) 个）" ($readOnly.Count -ge 15)
+Assert-True "只读工具带 readOnlyHint（实际 $($readOnly.Count) 个）" ($readOnly.Count -ge 18)
 
 # ---------------------------------------------------------------------------
 Write-Host "`n[2] 文档与内容" -ForegroundColor Yellow
@@ -505,7 +505,157 @@ $notesAfter = Invoke-Tool "list_notes" @{ note_type = "footnote" }
 Assert-True "删除后脚注数减少" ($notesAfter.Data.count -lt $notes.Data.count)
 
 # ---------------------------------------------------------------------------
-Write-Host "`n[10] 错误路径" -ForegroundColor Yellow
+Write-Host "`n[10] P0 增强（选区/移动/图片/页码/修订/批注/表格/保护/封面）" -ForegroundColor Yellow
+
+# 选区
+$sel = Invoke-Tool "get_selection" @{}
+Assert-Success "get_selection" $sel
+Assert-True "选区类型非空" (-not [string]::IsNullOrEmpty($sel.Data.selection_type))
+$goto = Invoke-Tool "goto_page" @{ page = 1 }
+Assert-Success "goto_page" $goto
+Assert-True "跳转后页码=1" ($goto.Data.page_number -eq 1)
+$replaceSel = Invoke-Tool "replace_selection" @{ text = "选区替换测试" }
+Assert-Success "replace_selection" $replaceSel
+$textAfterReplace = Invoke-Tool "get_document_text" @{ max_chars = 50000 }
+Assert-True "选区替换内容写入" ($textAfterReplace.Data.text.Contains("选区替换测试"))
+
+# 段落移动与复制
+$moveA = Invoke-Tool "add_paragraph" @{ text = "MOVE-A" }
+$moveB = Invoke-Tool "add_paragraph" @{ text = "MOVE-B" }
+$moved = Invoke-Tool "move_paragraph" @{ paragraph_index = $moveA.Data.paragraph_index; offset = 1 }
+Assert-Success "move_paragraph" $moved
+Assert-True "移动后段落在新位置" ($moved.Data.text -eq "MOVE-A")
+$movedUp = Invoke-Tool "get_paragraph" @{ paragraph_index = $moveA.Data.paragraph_index }
+Assert-True "相邻段落交换正确" ($movedUp.Data.text -eq "MOVE-B")
+$paragraphsBeforeCopy = (Invoke-Tool "get_active_document_info" @{}).Data.paragraph_count
+$copied = Invoke-Tool "copy_range" @{ source_start_paragraph = $moved.Data.paragraph_index }
+Assert-Success "copy_range" $copied
+$textAfterCopy = Invoke-Tool "get_document_text" @{ max_chars = 50000 }
+$moveACount = ([regex]::Matches($textAfterCopy.Data.text, "MOVE-A")).Count
+Assert-True "复制后 MOVE-A 出现 >= 2 次" ($moveACount -ge 2)
+$paragraphsAfterCopy = (Invoke-Tool "get_active_document_info" @{}).Data.paragraph_count
+Assert-True "复制单段后段落数 +1" ($paragraphsAfterCopy -eq $paragraphsBeforeCopy + 1) "before=$paragraphsBeforeCopy after=$paragraphsAfterCopy"
+
+# 给已有文本加书签
+$bmSel = Invoke-Tool "insert_bookmark" @{ name = "bm_sel"; find_text = "MOVE-B" }
+Assert-Success "insert_bookmark（find_text）" $bmSel
+Assert-True "书签文本匹配" ($bmSel.Data.text -eq "MOVE-B")
+$bmSelRead = Invoke-Tool "get_bookmark_text" @{ name = "bm_sel" }
+Assert-True "书签可读取" ($bmSelRead.Data.text -eq "MOVE-B")
+Invoke-Tool "delete_bookmark" @{ name = "bm_sel" } | Out-Null
+
+# 图片管理
+$images = Invoke-Tool "list_images" @{}
+Assert-Success "list_images" $images
+Assert-True "文档中存在图片" ($images.Data.count -ge 1)
+$updatedImage = Invoke-Tool "update_image" @{ kind = "inline"; index = 1; width = 120; alt_text = "e2e 图片" }
+Assert-Success "update_image" $updatedImage
+Assert-True "图片宽度已更新" ([math]::Abs($updatedImage.Data.width - 120) -lt 1)
+$imagesAfter = Invoke-Tool "list_images" @{}
+$deletedImage = Invoke-Tool "delete_image" @{ kind = "inline"; index = 1 }
+Assert-Success "delete_image" $deletedImage
+$imagesDeleted = Invoke-Tool "list_images" @{}
+Assert-True "删除后图片数减少" ($imagesDeleted.Data.count -lt $imagesAfter.Data.count)
+
+# 页码与首页页眉
+$pageNumbers = Invoke-Tool "set_page_numbers" @{ section_index = 1; number_style = "lower-roman"; starting_number = 5; restart_at_section = $true }
+Assert-Success "set_page_numbers" $pageNumbers
+Assert-True "页码样式=lower-roman" ($pageNumbers.Data.number_style -eq "lower-roman")
+Assert-True "起始编号=5" ($pageNumbers.Data.starting_number -eq 5)
+$firstHeader = Invoke-Tool "set_header_footer" @{ section_index = 1; header_type = "first-page"; header_text = "E2E 首页页眉"; different_first_page = $true }
+Assert-Success "set_header_footer（first-page）" $firstHeader
+$firstHeaderRead = Invoke-Tool "get_header_footer" @{ section_index = 1; header_type = "first-page" }
+Assert-True "首页页眉文本匹配" ($firstHeaderRead.Data.header_text -eq "E2E 首页页眉")
+Assert-True "首页不同已启用" ($firstHeaderRead.Data.different_first_page -eq $true)
+
+# 修订精细管理
+Invoke-Tool "set_track_changes" @{ enabled = $true } | Out-Null
+Invoke-Tool "add_paragraph" @{ text = "REVISION-P0" } | Out-Null
+$revisions = Invoke-Tool "list_revisions" @{}
+Assert-Success "list_revisions" $revisions
+Assert-True "存在修订记录" ($revisions.Data.count -ge 1)
+$acceptedOne = Invoke-Tool "accept_revision" @{ index = 1 }
+Assert-Success "accept_revision" $acceptedOne
+Assert-True "接受后修订数减少" ($acceptedOne.Data.revision_count -lt $revisions.Data.count)
+Invoke-Tool "set_track_changes" @{ enabled = $false } | Out-Null
+
+# 批注回复与解决
+$parentComment = Invoke-Tool "insert_comment" @{ text = "父批注"; anchor_text = "MOVE-A" }
+Assert-Success "insert_comment（父批注）" $parentComment
+$reply = Invoke-Tool "reply_comment" @{ index = $parentComment.Data.index; text = "回复内容" }
+Assert-Success "reply_comment" $reply
+$parentRead = Invoke-Tool "get_comment" @{ index = $parentComment.Data.index }
+Assert-True "批注回复数=1" ($parentRead.Data.reply_count -eq 1)
+$resolved = Invoke-Tool "resolve_comment" @{ index = $parentComment.Data.index; done = $true }
+Assert-Success "resolve_comment" $resolved
+Assert-True "批注已标记解决" ($resolved.Data.done -eq $true)
+
+# 表格增强
+$p0Table = Invoke-Tool "insert_table" @{ rows = 4; columns = 2; data = @(
+    @("Name", "Score"),
+    @("C", "30"),
+    @("A", "10"),
+    @("B", "20")
+) }
+Assert-Success "insert_table（P0 增强）" $p0Table
+$p0TableIndex = $p0Table.Data.table_index
+$borders = Invoke-Tool "set_table_borders" @{ table_index = $p0TableIndex; style = "single"; width = "thin"; color = "#808080" }
+Assert-Success "set_table_borders" $borders
+$padding = Invoke-Tool "set_cell_padding" @{ table_index = $p0TableIndex; top = 4; bottom = 4; left = 6; right = 6 }
+Assert-Success "set_cell_padding" $padding
+$sorted = Invoke-Tool "sort_table" @{ table_index = $p0TableIndex; key_column = 2; ascending = $true; has_header = $true; field_type = "numeric" }
+Assert-Success "sort_table" $sorted
+$sortedData = Invoke-Tool "get_table_data" @{ table_index = $p0TableIndex }
+Assert-True "排序后第一行=A" ($sortedData.Data.data[1][0] -eq "A")
+Assert-True "排序后第二行=B" ($sortedData.Data.data[2][0] -eq "B")
+$tableToText = Invoke-Tool "convert_table_to_text" @{ table_index = $p0TableIndex; separator = "|" }
+Assert-Success "convert_table_to_text" $tableToText
+Assert-True "表格已转文本" ($tableToText.Data.table_count -lt $p0Table.Data.table_count)
+$tableText = Invoke-Tool "get_document_text" @{ max_chars = 50000 }
+Assert-True "转换后的文本包含 A|10" ($tableText.Data.text.Contains("A|10"))
+$textFirst = Invoke-Tool "find_text" @{ text = "Name|Score"; max_results = 5 }
+$textLast = Invoke-Tool "find_text" @{ text = "C|30"; max_results = 5 }
+$textToTable = Invoke-Tool "convert_text_to_table" @{ start_paragraph = $textFirst.Data.matches[0].paragraph_index; end_paragraph = $textLast.Data.matches[0].paragraph_index; columns = 2; separator = "|" }
+Assert-Success "convert_text_to_table" $textToTable
+
+# 文档保护与最终状态
+$protected = Invoke-Tool "protect_document" @{ type = "read-only" }
+Assert-Success "protect_document" $protected
+Assert-True "文档已保护" ($protected.Data.protected -eq $true)
+$unprotected = Invoke-Tool "unprotect_document" @{}
+Assert-Success "unprotect_document" $unprotected
+Assert-True "文档已取消保护" ($unprotected.Data.protected -eq $false)
+# mark_as_final 在未保存文档上会触发“另存为”对话框并阻塞，先保存文档
+$preFinalPath = Join-Path $script:WorkDir "e2e_prefinal.docx"
+$preFinalSave = Invoke-Tool "save_document" @{ save_as_path = $preFinalPath; format = "docx" }
+Assert-Success "保存文档（标记最终前）" $preFinalSave
+$final = Invoke-Tool "mark_as_final" @{ final = $true }
+Assert-Success "mark_as_final true" $final
+Assert-True "已标记最终状态" ($final.Data.is_final -eq $true)
+$notFinal = Invoke-Tool "mark_as_final" @{ final = $false }
+Assert-True "已取消最终状态" ($notFinal.Data.is_final -eq $false)
+
+# 封面页
+$cover = Invoke-Tool "insert_cover_page" @{ title = "E2E 封面"; subtitle = "副标题"; author = "测试作者"; institution = "测试单位"; date = "2026-10-21" }
+Assert-Success "insert_cover_page" $cover
+Assert-True "封面段落数=5" ($cover.Data.cover_paragraphs -eq 5)
+$coverText = Invoke-Tool "get_document_text" @{ max_chars = 50000 }
+Assert-True "封面标题在文档开头" ($coverText.Data.text.StartsWith("E2E 封面"))
+
+# PDF 范围导出与 HTML 另存
+$rangePdf = Join-Path $script:WorkDir "e2e_range.pdf"
+if (Test-Path $rangePdf) { Remove-Item $rangePdf -Force }
+$rangeExport = Invoke-Tool "export_to_pdf" @{ output_path = $rangePdf; range = "from-to"; from_page = 1; to_page = 1 }
+Assert-Success "export_to_pdf（from-to）" $rangeExport
+Assert-True "范围 PDF 已生成" (Test-Path $rangePdf)
+$htmlPath = Join-Path $script:WorkDir "e2e_page.html"
+if (Test-Path $htmlPath) { Remove-Item $htmlPath -Force }
+$saveHtml = Invoke-Tool "save_document" @{ save_as_path = $htmlPath; format = "html" }
+Assert-Success "save_document（html）" $saveHtml
+Assert-True "HTML 文件已生成" (Test-Path $htmlPath)
+
+# ---------------------------------------------------------------------------
+Write-Host "`n[11] 错误路径" -ForegroundColor Yellow
 $noText = Invoke-Tool "add_paragraph" @{}
 Assert-ErrorCode "add_paragraph 缺 text" $noText "INVALID_PARAMS"
 
@@ -522,7 +672,7 @@ $noTarget = Invoke-Tool "set_text_style" @{ bold = $true }
 Assert-ErrorCode "set_text_style 缺目标" $noTarget "INVALID_PARAMS"
 
 # ---------------------------------------------------------------------------
-Write-Host "`n[11] 保存 / 备份 / 导出 / 打开 / 关闭" -ForegroundColor Yellow
+Write-Host "`n[12] 保存 / 备份 / 导出 / 打开 / 关闭" -ForegroundColor Yellow
 if (Test-Path $script:TestDocPath) { Remove-Item $script:TestDocPath -Force }
 if (Test-Path $script:TestPdfPath) { Remove-Item $script:TestPdfPath -Force }
 if (Test-Path $script:BackupPath) { Remove-Item $script:BackupPath -Force }
@@ -561,6 +711,8 @@ Assert-True "至少 1 个打开文档" ($docs.Data.count -ge 1)
 # activate_document 与 apply_style all=true 在独立文档上验证
 $newDoc2 = Invoke-Tool "new_document" @{}
 Assert-Success "new_document（第二文档）" $newDoc2
+$finalUnsaved = Invoke-Tool "mark_as_final" @{ final = $true }
+Assert-ErrorCode "mark_as_final 未保存文档报错" $finalUnsaved "OPERATION_FAILED"
 Invoke-Tool "add_paragraph" @{ text = "AllOne" } | Out-Null
 Invoke-Tool "add_paragraph" @{ text = "AllTwo" } | Out-Null
 $allStyle = Invoke-Tool "apply_style" @{ all = $true; style = "normal" }

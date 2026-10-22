@@ -33,6 +33,10 @@ namespace WordMcpServer.Mcp.Tools
             "list_notes",
             "get_note",
             "list_hyperlinks",
+            "get_selection",
+            "list_images",
+            "list_revisions",
+            "get_comment",
         };
 
         private readonly Dictionary<string, ITool> _tools;
@@ -140,6 +144,32 @@ namespace WordMcpServer.Mcp.Tools
                 new CreateStyleTool(wordService, logger),
                 new ModifyStyleTool(wordService, logger),
                 new DeleteStyleTool(wordService, logger),
+
+                // P0 增强：选区 / 移动 / 图片 / 页眉页脚 / 修订 / 批注 / 表格 / 保护 / 封面（24）
+                new GetSelectionTool(wordService, logger),
+                new ReplaceSelectionTool(wordService, logger),
+                new GotoPageTool(wordService, logger),
+                new MoveParagraphTool(wordService, logger),
+                new CopyRangeTool(wordService, logger),
+                new ListImagesTool(wordService, logger),
+                new UpdateImageTool(wordService, logger),
+                new DeleteImageTool(wordService, logger),
+                new SetPageNumbersTool(wordService, logger),
+                new ListRevisionsTool(wordService, logger),
+                new AcceptRevisionTool(wordService, logger),
+                new RejectRevisionTool(wordService, logger),
+                new GetCommentTool(wordService, logger),
+                new ReplyCommentTool(wordService, logger),
+                new ResolveCommentTool(wordService, logger),
+                new SetTableBordersTool(wordService, logger),
+                new SetCellPaddingTool(wordService, logger),
+                new SortTableTool(wordService, logger),
+                new ConvertTableToTextTool(wordService, logger),
+                new ConvertTextToTableTool(wordService, logger),
+                new ProtectDocumentTool(wordService, logger),
+                new UnprotectDocumentTool(wordService, logger),
+                new MarkAsFinalTool(wordService, logger),
+                new InsertCoverPageTool(wordService, logger),
             };
 
             _tools = tools.ToDictionary(t => t.Name, t => t);

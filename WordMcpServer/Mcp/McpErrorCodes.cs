@@ -30,6 +30,12 @@
         /// <summary>找不到指定的超链接。</summary>
         public const string HyperlinkNotFound = "HYPERLINK_NOT_FOUND";
 
+        /// <summary>找不到指定的修订。</summary>
+        public const string RevisionNotFound = "REVISION_NOT_FOUND";
+
+        /// <summary>找不到指定的图片。</summary>
+        public const string ImageNotFound = "IMAGE_NOT_FOUND";
+
         /// <summary>找不到指定的样式。</summary>
         public const string StyleNotFound = "STYLE_NOT_FOUND";
 

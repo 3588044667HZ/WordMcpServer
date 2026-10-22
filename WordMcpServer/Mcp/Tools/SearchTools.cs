@@ -11,7 +11,7 @@ namespace WordMcpServer.Mcp.Tools
 
         public override string Name => "find_replace_text";
 
-        public override string Description => "在全文范围查找并替换文本（replace_text 传空字符串表示删除匹配文本）。默认替换全部（replace_all=true）。";
+        public override string Description => "在文档/选区/页眉页脚范围查找并替换文本（replace_text 传空字符串表示删除）。支持通配符、只替换第 N 处或全部。";
 
         public override JObject InputSchema => Schema(new JObject
         {
@@ -19,6 +19,9 @@ namespace WordMcpServer.Mcp.Tools
             ["replace_text"] = Str("替换为的文本（可为空字符串表示删除）"),
             ["match_case"] = Bool("区分大小写，默认 false"),
             ["match_whole_word"] = Bool("全字匹配，默认 false"),
+            ["match_wildcards"] = Bool("使用 Word 通配符（* ? [] 等），默认 false"),
+            ["scope"] = Str("查找范围", "document", "selection", "headers-footers"),
+            ["occurrence"] = Int("只替换第 N 处（1 基）；缺省按 replace_all 语义", 1),
             ["replace_all"] = Bool("是否替换全部，默认 true（false 只替换第一处）"),
         }, "find_text");
 
@@ -30,9 +33,12 @@ namespace WordMcpServer.Mcp.Tools
                 ReplaceText = ToolArgumentValidator.OptionalString(arguments, "replace_text") ?? string.Empty,
                 MatchCase = ToolArgumentValidator.OptionalBool(arguments, "match_case") ?? false,
                 MatchWholeWord = ToolArgumentValidator.OptionalBool(arguments, "match_whole_word") ?? false,
+                MatchWildcards = ToolArgumentValidator.OptionalBool(arguments, "match_wildcards") ?? false,
+                Scope = ToolArgumentValidator.OptionalString(arguments, "scope") ?? "document",
+                Occurrence = ToolArgumentValidator.OptionalInt(arguments, "occurrence", 1),
                 ReplaceAll = ToolArgumentValidator.OptionalBool(arguments, "replace_all") ?? true,
             };
-            Logger.Debug($"执行 find_replace_text，findText={request.FindText}");
+            Logger.Debug($"执行 find_replace_text，findText={request.FindText}，scope={request.Scope}");
             return JObject.FromObject(Service.FindReplaceText(request));
         }
     }
@@ -44,13 +50,15 @@ namespace WordMcpServer.Mcp.Tools
 
         public override string Name => "find_text";
 
-        public override string Description => "查找文本在文档中的所有出现位置（段落索引与字符位置），最多返回 max_results 条。";
+        public override string Description => "查找文本在文档/选区/页眉页脚中的出现位置（段落索引与字符位置），最多返回 max_results 条。支持通配符。";
 
         public override JObject InputSchema => Schema(new JObject
         {
             ["text"] = Str("要查找的文本"),
             ["match_case"] = Bool("区分大小写，默认 false"),
             ["match_whole_word"] = Bool("全字匹配，默认 false"),
+            ["match_wildcards"] = Bool("使用 Word 通配符，默认 false"),
+            ["scope"] = Str("查找范围", "document", "selection", "headers-footers"),
             ["max_results"] = Int("最多返回的匹配数（默认 20）", 1, 200),
         }, "text");
 
@@ -61,9 +69,11 @@ namespace WordMcpServer.Mcp.Tools
                 Text = ToolArgumentValidator.RequireString(arguments, "text"),
                 MatchCase = ToolArgumentValidator.OptionalBool(arguments, "match_case") ?? false,
                 MatchWholeWord = ToolArgumentValidator.OptionalBool(arguments, "match_whole_word") ?? false,
+                MatchWildcards = ToolArgumentValidator.OptionalBool(arguments, "match_wildcards") ?? false,
+                Scope = ToolArgumentValidator.OptionalString(arguments, "scope") ?? "document",
                 MaxResults = ToolArgumentValidator.OptionalInt(arguments, "max_results", 1, 200) ?? 20,
             };
-            Logger.Debug($"执行 find_text，text={request.Text}");
+            Logger.Debug($"执行 find_text，text={request.Text}，scope={request.Scope}");
             return JObject.FromObject(Service.FindText(request));
         }
     }
@@ -75,20 +85,26 @@ namespace WordMcpServer.Mcp.Tools
 
         public override string Name => "insert_bookmark";
 
-        public override string Description => "在文档末尾追加一段文本并将其标记为书签（名称不能与现有书签重复）。后续可用 get_bookmark_text 读取。";
+        public override string Description => "给已有文本加书签：用 find_text（可指定第 N 处）或 paragraph_index 定位现有内容；都不传时在文档末尾追加一段文本并加书签。";
 
         public override JObject InputSchema => Schema(new JObject
         {
             ["name"] = Str("书签名称（字母开头，不含空格）"),
-            ["text"] = Str("书签内容文本（可选）"),
+            ["find_text"] = Str("给该文本（第 occurrence 处）加书签（可选）"),
+            ["occurrence"] = Int("find_text 的第 N 处匹配（默认 1）", 1),
+            ["paragraph_index"] = Int("给该段落加书签（1 基，可选）", 1),
+            ["text"] = Str("都不指定定位方式时，在文档末尾追加的文本（可选）"),
         }, "name");
 
         public override JObject Execute(JObject arguments)
         {
             var name = ToolArgumentValidator.RequireString(arguments, "name");
             var text = ToolArgumentValidator.OptionalString(arguments, "text");
-            Logger.Debug($"执行 insert_bookmark，name={name}");
-            return JObject.FromObject(Service.InsertBookmark(name, text));
+            var findText = ToolArgumentValidator.OptionalString(arguments, "find_text");
+            var occurrence = ToolArgumentValidator.OptionalInt(arguments, "occurrence", 1);
+            var paragraphIndex = ToolArgumentValidator.OptionalInt(arguments, "paragraph_index", 1);
+            Logger.Debug($"执行 insert_bookmark，name={name}，findText={findText}，paragraphIndex={paragraphIndex}");
+            return JObject.FromObject(Service.InsertBookmark(name, text, findText, paragraphIndex, occurrence));
         }
     }
 

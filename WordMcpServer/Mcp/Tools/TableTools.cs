@@ -416,4 +416,161 @@ namespace WordMcpServer.Mcp.Tools
             return JObject.FromObject(Service.SetTableStyle(tableIndex, style));
         }
     }
+
+    /// <summary>设置表格边框。</summary>
+    public sealed class SetTableBordersTool : ToolBase
+    {
+        public SetTableBordersTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "set_table_borders";
+
+        public override string Description => "设置表格边框：样式（single/double/dotted/dashed/none）、粗细、颜色，可选内框线与外框线。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["table_index"] = Int("表格索引（1 基，默认 1）", 1),
+            ["style"] = Str("边框样式", "single", "double", "dotted", "dashed", "none"),
+            ["width"] = Str("粗细：thin / medium / thick 或磅值"),
+            ["color"] = Str("边框颜色：#RRGGBB / 颜色名"),
+            ["inside"] = Bool("是否设置内框线，默认 true"),
+            ["outside"] = Bool("是否设置外框线，默认 true"),
+        });
+
+        public override JObject Execute(JObject arguments)
+        {
+            var request = new SetTableBordersRequest
+            {
+                TableIndex = ToolArgumentValidator.OptionalInt(arguments, "table_index", 1) ?? 1,
+                Style = ToolArgumentValidator.OptionalString(arguments, "style") ?? "single",
+                Width = ToolArgumentValidator.OptionalString(arguments, "width"),
+                ColorArgb = ToolArgumentValidator.OptionalColor(arguments, "color"),
+                Inside = ToolArgumentValidator.OptionalBool(arguments, "inside") ?? true,
+                Outside = ToolArgumentValidator.OptionalBool(arguments, "outside") ?? true,
+            };
+            Logger.Debug($"执行 set_table_borders，tableIndex={request.TableIndex}");
+            return JObject.FromObject(Service.SetTableBorders(request));
+        }
+    }
+
+    /// <summary>设置单元格内边距。</summary>
+    public sealed class SetCellPaddingTool : ToolBase
+    {
+        public SetCellPaddingTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "set_cell_padding";
+
+        public override string Description => "设置单元格内边距（磅）：不传 row/column 时应用到整表，可只设 top/bottom/left/right 中的部分。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["table_index"] = Int("表格索引（1 基，默认 1）", 1),
+            ["row"] = Int("目标行（1 基，可选）", 1),
+            ["column"] = Int("目标列（1 基，可选）", 1),
+            ["top"] = Num("上内边距（磅）", 0),
+            ["bottom"] = Num("下内边距（磅）", 0),
+            ["left"] = Num("左内边距（磅）", 0),
+            ["right"] = Num("右内边距（磅）", 0),
+        });
+
+        public override JObject Execute(JObject arguments)
+        {
+            var request = new CellPaddingRequest
+            {
+                TableIndex = ToolArgumentValidator.OptionalInt(arguments, "table_index", 1) ?? 1,
+                Row = ToolArgumentValidator.OptionalInt(arguments, "row", 1),
+                Column = ToolArgumentValidator.OptionalInt(arguments, "column", 1),
+                Top = ToolArgumentValidator.OptionalDouble(arguments, "top", 0),
+                Bottom = ToolArgumentValidator.OptionalDouble(arguments, "bottom", 0),
+                Left = ToolArgumentValidator.OptionalDouble(arguments, "left", 0),
+                Right = ToolArgumentValidator.OptionalDouble(arguments, "right", 0),
+            };
+            Logger.Debug($"执行 set_cell_padding，tableIndex={request.TableIndex}");
+            return JObject.FromObject(Service.SetCellPadding(request));
+        }
+    }
+
+    /// <summary>表格排序。</summary>
+    public sealed class SortTableTool : ToolBase
+    {
+        public SortTableTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "sort_table";
+
+        public override string Description => "按指定列对表格排序（可指定升序/降序、是否含表头、字段类型）。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["table_index"] = Int("表格索引（1 基，默认 1）", 1),
+            ["key_column"] = Int("排序列（1 基，默认 1）", 1),
+            ["ascending"] = Bool("是否升序，默认 true"),
+            ["has_header"] = Bool("首行是否为表头（不参与排序），默认 true"),
+            ["field_type"] = Str("字段类型", "alphanumeric", "numeric", "date"),
+        });
+
+        public override JObject Execute(JObject arguments)
+        {
+            var request = new SortTableRequest
+            {
+                TableIndex = ToolArgumentValidator.OptionalInt(arguments, "table_index", 1) ?? 1,
+                KeyColumn = ToolArgumentValidator.OptionalInt(arguments, "key_column", 1) ?? 1,
+                Ascending = ToolArgumentValidator.OptionalBool(arguments, "ascending") ?? true,
+                HasHeader = ToolArgumentValidator.OptionalBool(arguments, "has_header") ?? true,
+                FieldType = ToolArgumentValidator.OptionalString(arguments, "field_type") ?? "alphanumeric",
+            };
+            Logger.Debug($"执行 sort_table，tableIndex={request.TableIndex}，keyColumn={request.KeyColumn}");
+            return JObject.FromObject(Service.SortTable(request));
+        }
+    }
+
+    /// <summary>表格转文本。</summary>
+    public sealed class ConvertTableToTextTool : ToolBase
+    {
+        public ConvertTableToTextTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "convert_table_to_text";
+
+        public override string Description => "把表格转换为文本（单元格之间用指定分隔符分隔，默认制表符）。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["table_index"] = Int("表格索引（1 基，默认 1）", 1),
+            ["separator"] = Str("单元格分隔符（默认制表符 \\t）"),
+        });
+
+        public override JObject Execute(JObject arguments)
+        {
+            var tableIndex = ToolArgumentValidator.OptionalInt(arguments, "table_index", 1) ?? 1;
+            var separator = ToolArgumentValidator.OptionalString(arguments, "separator") ?? "\t";
+            Logger.Debug($"执行 convert_table_to_text，tableIndex={tableIndex}");
+            return JObject.FromObject(Service.ConvertTableToText(tableIndex, separator));
+        }
+    }
+
+    /// <summary>文本转表格。</summary>
+    public sealed class ConvertTextToTableTool : ToolBase
+    {
+        public ConvertTextToTableTool(IWordService service, IMcpLogger logger) : base(service, logger) { }
+
+        public override string Name => "convert_text_to_table";
+
+        public override string Description => "把段落区间内的文本转换为表格：指定列数与分隔符（默认制表符）。";
+
+        public override JObject InputSchema => Schema(new JObject
+        {
+            ["start_paragraph"] = Int("起始段落（1 基）", 1),
+            ["end_paragraph"] = Int("结束段落（1 基，含，可选；默认同起始段）", 1),
+            ["columns"] = Int("列数（可选，缺省由 Word 推断）", 1),
+            ["separator"] = Str("分隔符（默认制表符 \\t）"),
+        }, "start_paragraph");
+
+        public override JObject Execute(JObject arguments)
+        {
+            var start = ToolArgumentValidator.RequireInt(arguments, "start_paragraph", 1);
+            var end = ToolArgumentValidator.OptionalInt(arguments, "end_paragraph", 1) ?? start;
+            var columns = ToolArgumentValidator.OptionalInt(arguments, "columns", 1) ?? 0;
+            var separator = ToolArgumentValidator.OptionalString(arguments, "separator") ?? "\t";
+            Logger.Debug($"执行 convert_text_to_table，start={start}，end={end}");
+            return JObject.FromObject(Service.ConvertTextToTable(start, end, columns, separator));
+        }
+    }
 }

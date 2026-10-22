@@ -397,9 +397,105 @@ get_document_text 的 text 包含三段文字。
 
 ---
 
-## 十一、综合任务（端到端）
+## 十一、P0 增强（第三批：选区/图片/页码/修订/批注/表格/保护/封面）
 
-### 22. 生成一份完整报告
+### 35. 选区读取、跳转与替换
+
+**提示词**：
+
+> ① get_selection 查看当前选区（类型、文本、段落、页码）；② goto_page page=1 跳转到第 1 页；
+> ③ 选中一段文字后 replace_selection 替换为“已由 AI 改写”；④ get_document_text 确认写入。
+
+**预期**：选区信息含段落与页码；跳转后 page_number=1；替换内容出现在文档中。
+
+### 36. 段落移动与区间复制
+
+**提示词**：
+
+> ① add_paragraph 依次追加 A、B 两段；② move_paragraph 把 A 下移 1 位，
+> get_paragraph 确认顺序变为 B、A；③ copy_range 以 A 的新索引复制到文末；
+> ④ get_document_text 确认 A 出现两次，且文档段落数只增加 1。
+
+**预期**：移动后顺序正确；复制保留格式；不产生多余空段落。
+
+### 37. 图片管理
+
+**提示词**：
+
+> ① insert_image 插入一张图片（layout="floating"、wrap="square"、alt_text="示意图"）；
+> ② list_images 查看内嵌/浮动条目；③ update_image 按 kind/name 调整宽度、写入 alt 与标题；
+> ④ 再列一次确认更新；⑤ delete_image 删除该图片。
+
+**预期**：列表包含 kind、index/name、wrap、alt_text；更新与删除均 isError=false。
+
+### 38. 页码、首页页眉与封面
+
+**提示词**：
+
+> ① set_page_numbers section_index=1 number_style="lower-roman" starting_number=5
+> restart_at_section=true；② set_header_footer header_type="first-page" 写入“首页页眉”；
+> ③ insert_cover_page 插入标题、副标题、作者、单位、日期；
+> ④ get_document_text 确认封面标题在文档最开头；⑤ 导出 PDF 检查封面独立成页。
+
+**预期**：页码为小写罗马数字且从 5 开始；首页页眉只出现在首页；
+文档以表格开头时也能把封面插到表格之前（内部自动处理分节符）。
+
+### 39. 单条修订处理
+
+**提示词**：
+
+> ① set_track_changes 开启修订；② 修改两处文本；③ list_revisions 读取修订列表；
+> ④ accept_revision 接受第 1 条，再 list_revisions 确认条数减少；
+> ⑤ reject_revision 拒绝剩余一条；⑥ set_track_changes 关闭。
+
+**预期**：单条接受/拒绝均生效；修订数量递减；最终关闭修订。
+
+### 40. 批注回复与解决
+
+**提示词**：
+
+> ① insert_comment 对“结论”插入批注；② get_comment 读取详情；
+> ③ reply_comment 回复“已修改”；④ resolve_comment done=true；
+> ⑤ get_comment 确认 done=true 且 reply_count=1；⑥ resolve_comment done=false 重新打开。
+
+**预期**：回复数与解决状态正确；重新打开后 done=false。
+
+### 41. 表格增强闭环
+
+**提示词**：
+
+> ① insert_table 建表并填入 A/10、B/20、C/30；② set_table_borders 设置边框；
+> ③ set_cell_padding 设置内边距；④ sort_table 按第 2 列数字升序；
+> ⑤ get_table_data 确认顺序；⑥ convert_table_to_text 用 "|" 分隔；
+> ⑦ convert_text_to_table 再把该文本转回 2 列表格。
+
+**预期**：排序正确；转换后文本包含 "A|10"；表格数先减后增。
+
+### 42. 文档保护与最终状态
+
+**提示词**：
+
+> ① protect_document type="read-only"；② unprotect_document；
+> ③ 先 save_document 保存文档；④ mark_as_final final=true；⑤ mark_as_final final=false。
+> 另：对未保存的新文档直接 mark_as_final=true，应返回 OPERATION_FAILED 而不是卡住。
+
+**预期**：保护/解除成功；最终状态可切换；未保存文档得到明确错误（Word 会弹“另存为”）。
+
+### 43. 多格式保存与 PDF 范围导出
+
+**提示词**：
+
+> ① save_document format="html" 另存为 report.html；② 再另存为 docm 与 xml；
+> ③ export_to_pdf range="from-to" from_page=1 to_page=1；
+> ④ 检查文件均存在；⑤ 用不支持的格式（如 pdf）调用 save_document 应返回 UNSUPPORTED_TYPE。
+
+**预期**：各格式文件生成；范围 PDF 只含指定页；不支持格式返回明确错误码。
+
+---
+
+## 十二、综合任务（端到端）
+
+### 44. 生成一份完整报告
 
 **提示词**：
 

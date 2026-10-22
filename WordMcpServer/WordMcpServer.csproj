@@ -231,6 +231,7 @@
     <Compile Include="Mcp\Tools\StyleTools.cs" />
     <Compile Include="Mcp\Tools\NoteTools.cs" />
     <Compile Include="Mcp\Tools\AcademicTools.cs" />
+    <Compile Include="Mcp\Tools\SelectionTools.cs" />
     <Compile Include="Services\IWordService.cs" />
     <Compile Include="Services\WordService.cs" />
     <Compile Include="ThisAddIn.cs">
