@@ -250,9 +250,6 @@
     <None Include="packages.config" />
     <None Include="WordMcpServer_TemporaryKey.pfx" />
   </ItemGroup>
-  <ItemGroup>
-    <Content Include=".gitignore" />
-  </ItemGroup>
   <PropertyGroup>
     <!-- 自动探测 VS 版本：命令行构建时 VisualStudioVersion 未注入，
          按 OfficeTools targets 实际存在的版本回退，保证不传参也能找到 VSTO targets -->
